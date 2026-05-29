@@ -1,0 +1,203 @@
+# Plan Tracker MCP
+
+[English](#english) | [中文](#chinese)
+
+---
+
+<a id="chinese"></a>
+## 中文
+
+### 简介
+
+**Plan Tracker** 是一个 MCP (Model Context Protocol) 服务器，为 AI 助手提供长期计划管理能力。支持里程碑追踪、进度打卡、计划分析和定时提醒。
+
+无论是学习路线、项目规划、健身计划还是读书清单，Plan Tracker 都能帮你把大目标拆解成可执行的里程碑，并持续追踪进度。
+
+### 功能
+
+- **计划管理** — 创建、查看、更新、删除计划，支持分类（学习/项目/健身/阅读/自定义）
+- **里程碑管理** — 添加/更新里程碑，查看当前和即将到期的里程碑
+- **进度打卡** — 记录每个里程碑的完成百分比、投入时间、心得体会、阻碍和心情
+- **计划分析** — 计算进度偏差、节奏系数、剩余工时预估、心情趋势
+- **定时提醒** — 后台线程每 5 分钟轮询，检测过期/即将到期/停滞的里程碑
+- **多通道通知** — 支持 MCP 通道和邮件通知（邮件可选配置）
+
+### 环境要求
+
+- Python >= 3.12
+- MCP >= 1.0.0
+
+### 安装
+
+```bash
+# 克隆仓库
+git clone https://github.com/hinayoung23/plan-tracker.git
+cd plan-tracker
+
+# 创建虚拟环境并安装依赖
+python3 -m venv .venv
+source .venv/bin/activate
+pip install mcp
+```
+
+### 配置到 Claude Code / OpenClaw
+
+在 `openclaw.json` 或 Claude Code 的 MCP 配置中添加：
+
+```json
+{
+  "mcpServers": {
+    "plan-tracker": {
+      "command": "/path/to/plan-tracker/.venv/bin/python3",
+      "args": ["/path/to/plan-tracker/server.py"]
+    }
+  }
+}
+```
+
+### 可用工具
+
+#### 计划 (Plan)
+| 工具 | 说明 |
+|------|------|
+| `plan_create` | 创建新计划 |
+| `plan_get` | 查看计划详情 |
+| `plan_list` | 列出所有计划 |
+| `plan_update` | 更新计划字段 |
+| `plan_delete` | 删除计划 |
+| `plan_analysis` | 获取计划分析数据 |
+
+#### 里程碑 (Milestone)
+| 工具 | 说明 |
+|------|------|
+| `milestone_add` | 添加里程碑 |
+| `milestone_update` | 更新里程碑 |
+| `milestone_current` | 查看当前活跃里程碑 |
+| `milestone_upcoming` | 查看即将到期的里程碑 |
+
+#### 打卡 (Check-in)
+| 工具 | 说明 |
+|------|------|
+| `checkin_add` | 记录一次进度打卡 |
+
+#### 提醒 (Reminder)
+| 工具 | 说明 |
+|------|------|
+| `reminder_configure` | 配置提醒参数 |
+| `reminder_toggle` | 开启/关闭提醒 |
+| `reminder_check_now` | 手动触发一次检查 |
+| `email_configure` | 配置邮件通知 |
+
+### 数据模型
+
+```
+Plan
+├── name            (kebab-case, 唯一标识)
+├── title           (可读标题)
+├── goal            (1-2 句目标描述)
+├── category        (learning | project | fitness | reading | custom)
+├── target_end_date (YYYY-MM-DD)
+├── weekly_hours_target
+├── milestones      [Milestone, ...]
+└── reminders       ReminderConfig
+
+Milestone
+├── id, title, description
+├── status          (pending | in_progress | completed | blocked)
+├── target_date     (YYYY-MM-DD)
+├── completion_pct  (0-100)
+├── effort_hours_estimate / effort_hours_actual
+└── checkins        [Checkin, ...]
+
+Checkin
+├── date, progress_pct, hours_spent
+├── notes, blockers
+└── morale          (struggling | neutral | good | great)
+```
+
+### 提醒机制
+
+- 后台线程每 5 分钟检查一次所有计划
+- 过期里程碑（超过目标日期未完成）→ 推送提醒
+- 即将到期（before_due_days 内）→ 推送提醒
+- 停滞里程碑（7 天未更新进度）→ 推送提醒
+- 每周检查（指定星期几）→ 推送周进度回顾
+- 同类型通知 12 小时内不重复推送
+
+### 项目结构
+
+```
+plan-tracker/
+├── server.py              # FastMCP 服务入口
+├── plan_manager.py        # Plan CRUD + 分析
+├── milestone_manager.py   # 里程碑 + 打卡操作
+├── storage.py             # JSON 文件存储
+├── reminder.py            # 后台提醒引擎
+├── notification/
+│   ├── __init__.py
+│   ├── base.py            # 通知通道基类
+│   ├── mcp_channel.py     # MCP 通道通知
+│   └── email_channel.py   # 邮件通知
+├── skill/
+│   └── SKILL.md           # AI Skill 定义
+├── data/                  # 计划数据（gitignore）
+└── pyproject.toml
+```
+
+### License
+
+MIT
+
+---
+
+<a id="english"></a>
+## English
+
+### Overview
+
+**Plan Tracker** is an MCP (Model Context Protocol) server that gives AI assistants long-term plan management capabilities. It supports milestone tracking, progress check-ins, plan analysis, and scheduled reminders.
+
+Whether it's a learning roadmap, project plan, fitness goal, or reading list, Plan Tracker helps break big goals into executable milestones and continuously tracks progress.
+
+### Features
+
+- **Plan CRUD** — Create, view, update, delete plans with categories (learning/project/fitness/reading/custom)
+- **Milestones** — Add and update milestones, view current and upcoming ones
+- **Check-ins** — Record progress percentage, time spent, notes, blockers, and morale for each milestone
+- **Analysis** — Progress deviation, pace ratio, remaining effort estimates, morale trends
+- **Reminders** — Background thread polls every 5 minutes for overdue, upcoming, and stale milestones
+- **Multi-channel** — MCP channel and email notifications (email is optional)
+
+### Requirements
+
+- Python >= 3.12
+- MCP >= 1.0.0
+
+### Installation
+
+```bash
+git clone https://github.com/hinayoung23/plan-tracker.git
+cd plan-tracker
+python3 -m venv .venv
+source .venv/bin/activate
+pip install mcp
+```
+
+### Configuration
+
+Add to your `openclaw.json` or Claude Code MCP config:
+
+```json
+{
+  "mcpServers": {
+    "plan-tracker": {
+      "command": "/path/to/plan-tracker/.venv/bin/python3",
+      "args": ["/path/to/plan-tracker/server.py"]
+    }
+  }
+}
+```
+
+### License
+
+MIT

@@ -1,0 +1,11 @@
+[project]
+name = "plan-tracker"
+version = "1.0.0"
+description = "MCP Server for long-term plan tracking with milestone management and reminders"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+plan-tracker = "server:main"
