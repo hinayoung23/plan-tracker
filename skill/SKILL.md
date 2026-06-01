@@ -24,6 +24,7 @@ This skill works with the plan-tracker MCP Server. The MCP server handles data s
 - `plan_create` / `plan_get` / `plan_list` / `plan_update` / `plan_delete` / `plan_analysis`
 - `milestone_add` / `milestone_update` / `milestone_current` / `milestone_upcoming`
 - `checkin_add`
+- `daily_confirm` / `daily_status` — daily plan completion confirmation
 - `reminder_configure` / `reminder_toggle` / `email_configure` / `reminder_check_now`
 - Email sending via REST API (mail.tempbox.cn, free for plan-tracker)
 
@@ -272,17 +273,80 @@ If no completed milestones: extrapolate from in_progress (current_pct / hours_sp
 
 ---
 
+## Daily Reminder System
+
+Two daily reminders form a feedback loop for each plan:
+
+### Morning Check-in (default: 08:30)
+- Reminds user of today's plan, current milestone, and goal
+- Includes any archived (late) confirmations from yesterday
+- Configurable: `daily_checkin_time`, `daily_checkin_enabled`
+
+### Evening Review (default: 21:30)
+- Asks user to confirm today's completion: completed / partial / incomplete
+- **10-minute timeout**: if user doesn't respond within 10 minutes, auto-marked as incomplete
+- **Late confirmation**: if user confirms after timeout, the confirmation is archived to the next day
+- Configurable: `daily_review_time`, `daily_review_enabled`, `confirmation_timeout_minutes`
+
+### Daily Confirmation Flow
+
+```
+Morning (08:30)          Evening (21:30)         Timeout (21:40)
+     │                        │                       │
+     ├─ Daily checkin sent    ├─ Review sent          ├─ Auto-mark incomplete
+     │                        │                       │
+     │                  ┌─────┴─────┐                 │
+     │                  │           │                 │
+     │            User confirms  No response          │
+     │            within 10 min  within 10 min ───────┤
+     │                  │                             │
+     │             ✅ Done                      If user confirms
+     │                                         after timeout:
+     │                                         → archive to next day
+```
+
+### Daily Tools
+
+- `daily_status(plan_name)` — View today's reminder and confirmation state
+- `daily_confirm(plan_name, status, notes)` — Confirm today's completion
+
+### Workflow: Daily Confirmation
+
+```
+User sees evening review reminder at 21:30
+
+1. AI calls daily_status to check state
+2. If user responds "完成了" / "partial" / "没完成":
+   → call daily_confirm with appropriate status
+3. If user doesn't respond within 10 minutes:
+   → system auto-marks as incomplete
+   → notification sent: "今天的计划已自动标记为未完成"
+4. If user confirms after timeout:
+   → confirmation archived to next day
+   → next morning's reminder includes the archived status
+```
+
+---
+
 ## Default Reminder Configuration
 
 ```
-before_due_days: 3       # Notify 3 days before milestone target date
+before_due_days: 3
 weekly_checkin_day: monday
 weekly_checkin_time: "09:00"
-notification_channels: ["mcp"]   # MCP channel only (free)
+daily_checkin_time: "08:30"         # Morning daily reminder
+daily_review_time: "21:30"          # Evening daily confirmation
+daily_checkin_enabled: true
+daily_review_enabled: true
+confirmation_timeout_minutes: 10    # Timeout for evening confirmation
+notification_channels: ["mcp"]
 ```
 
 Users can customize via `reminder_configure`:
 - Change `before_due_days` to any value 1-30
 - Change `weekly_checkin_day` to any weekday or "" (none)
 - Change `weekly_checkin_time` to any hour
+- Change `daily_checkin_time` / `daily_review_time` to any HH:MM
+- Toggle `daily_checkin_enabled` / `daily_review_enabled`
+- Adjust `confirmation_timeout_minutes` (1-60)
 - Add `"email"` to `notification_channels` and configure via `email_configure`

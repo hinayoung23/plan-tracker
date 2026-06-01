@@ -32,6 +32,12 @@ from milestone_manager import (
     get_upcoming_milestones,
 )
 from reminder import ReminderEngine
+from daily_tracker import (
+    get_today_state,
+    record_confirmation,
+    check_review_timeout,
+    auto_mark_incomplete,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("plan_tracker.server")
@@ -183,7 +189,7 @@ async def checkin_add(
 
 @mcp.tool()
 async def reminder_configure(plan_name: str, config: dict) -> str:
-    """Configure reminders for a plan. config keys: enabled, before_due_days, weekly_checkin_day, weekly_checkin_time, notification_channels."""
+    """Configure reminders for a plan. config keys: enabled, before_due_days, weekly_checkin_day, weekly_checkin_time, daily_checkin_time, daily_review_time, daily_checkin_enabled, daily_review_enabled, confirmation_timeout_minutes, notification_channels."""
     from storage import load_plan, save_plan
 
     plan = load_plan(plan_name)
@@ -191,7 +197,13 @@ async def reminder_configure(plan_name: str, config: dict) -> str:
         return _json_response({"success": False, "error": f"Plan '{plan_name}' not found"})
 
     reminders = plan.setdefault("reminders", {})
-    for key in ("enabled", "before_due_days", "weekly_checkin_day", "weekly_checkin_time", "notification_channels"):
+    configurable = (
+        "enabled", "before_due_days", "weekly_checkin_day", "weekly_checkin_time",
+        "daily_checkin_time", "daily_review_time",
+        "daily_checkin_enabled", "daily_review_enabled",
+        "confirmation_timeout_minutes", "notification_channels",
+    )
+    for key in configurable:
         if key in config:
             reminders[key] = config[key]
 
@@ -211,6 +223,71 @@ async def reminder_toggle(plan_name: str, enabled: bool) -> str:
     plan.setdefault("reminders", {})["enabled"] = enabled
     save_plan(plan_name, plan)
     return _json_response({"success": True, "enabled": enabled})
+
+
+# ── Daily confirmation tools ──
+
+@mcp.tool()
+async def daily_confirm(plan_name: str, status: str, notes: str = "") -> str:
+    """Confirm today's plan completion. status: completed | partial | incomplete."""
+    try:
+        result = record_confirmation(plan_name, completion_status=status, notes=notes)
+        if result.get("is_archived"):
+            return _json_response({
+                "success": True,
+                "message": (
+                    f"确认已超时，完成情况已归档到 {result['archive_target_date']}。"
+                    f"明天早上的提醒中将包含此信息。"
+                ),
+                "result": result,
+            })
+        return _json_response({"success": True, "result": result})
+    except ValueError as e:
+        return _json_response({"success": False, "error": str(e)})
+
+
+@mcp.tool()
+async def daily_status(plan_name: str) -> str:
+    """Get today's reminder and confirmation status for a plan."""
+    from storage import load_plan
+
+    plan = load_plan(plan_name)
+    if plan is None:
+        return _json_response({"success": False, "error": f"Plan '{plan_name}' not found"})
+
+    today_state = get_today_state(plan_name)
+    reminders = plan.get("reminders", {})
+    timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
+    is_timed_out = check_review_timeout(plan_name, timeout_minutes)
+
+    return _json_response({
+        "success": True,
+        "daily_status": {
+            "plan_name": plan_name,
+            "date": today_state.get("date", ""),
+            "morning_reminder": {
+                "sent": today_state.get("checkin_reminded", False),
+                "sent_at": today_state.get("checkin_reminded_at"),
+                "configured_time": reminders.get("daily_checkin_time", "08:30"),
+                "enabled": reminders.get("daily_checkin_enabled", True),
+            },
+            "evening_review": {
+                "sent": today_state.get("review_reminded", False),
+                "sent_at": today_state.get("review_reminded_at"),
+                "configured_time": reminders.get("daily_review_time", "21:30"),
+                "enabled": reminders.get("daily_review_enabled", True),
+                "timeout_minutes": timeout_minutes,
+                "is_timed_out": is_timed_out,
+            },
+            "confirmation": {
+                "confirmed": today_state.get("confirmed", False),
+                "confirmed_at": today_state.get("confirmed_at"),
+                "completion_status": today_state.get("completion_status"),
+                "completion_notes": today_state.get("completion_notes"),
+                "auto_marked": today_state.get("auto_marked", False),
+            },
+        },
+    })
 
 
 @mcp.tool()

@@ -1,6 +1,8 @@
 """Scheduled reminder engine.
 
 Runs a background thread that periodically checks all plans for:
+- Daily morning check-in reminders (default 08:30)
+- Daily evening review confirmations (default 21:30) with 10-min timeout
 - Overdue milestones (past target date)
 - Upcoming milestones (within before_due_days)
 - Stale check-ins (no update in 7+ days)
@@ -13,11 +15,19 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from storage import INDEX_FILE, load_plan, load_index
 from notification import McpChannel, EmailChannel
+from daily_tracker import (
+    get_today_state,
+    record_checkin_reminded,
+    record_review_reminded,
+    check_review_timeout,
+    auto_mark_incomplete,
+    get_archived_for_date,
+)
 
 logger = logging.getLogger("plan_tracker.reminder")
 
@@ -72,6 +82,10 @@ class ReminderEngine:
             reminders = plan.get("reminders", {})
             if not reminders.get("enabled", True):
                 continue
+
+            # ── Daily reminders (new) ──
+            daily_notifications = self._check_daily(entry, plan)
+            notifications.extend(daily_notifications)
 
             before_days = reminders.get("before_due_days", 3)
 
@@ -139,8 +153,200 @@ class ReminderEngine:
         self._check_all()
         return []
 
+    # ── Daily reminder logic ──
 
-# ── builders ──
+    def _check_daily(self, entry: dict, plan: dict) -> list[dict]:
+        """Check and trigger daily check-in / review reminders for one plan.
+
+        Returns a list of notification dicts to dispatch.
+        """
+        reminders = plan.get("reminders", {})
+        notifications = []
+        now = datetime.now(timezone.utc)
+
+        # Morning daily check-in
+        if reminders.get("daily_checkin_enabled", True):
+            chk_time = reminders.get("daily_checkin_time", "08:30")
+            if self._in_time_window(now, chk_time, window_hours=3):
+                today_state = get_today_state(entry["name"])
+                if not today_state.get("checkin_reminded"):
+                    record_checkin_reminded(entry["name"])
+                    milestone = _get_active_milestone(plan)
+                    archived = get_archived_for_date(entry["name"], _today_str())
+                    notifications.append(
+                        _build_daily_checkin(entry, plan, milestone, archived)
+                    )
+
+        # Evening daily review
+        if reminders.get("daily_review_enabled", True):
+            rev_time = reminders.get("daily_review_time", "21:30")
+            if self._in_time_window(now, rev_time, window_hours=3):
+                today_state = get_today_state(entry["name"])
+                if not today_state.get("review_reminded"):
+                    record_review_reminded(entry["name"])
+                    milestone = _get_active_milestone(plan)
+                    timeout = reminders.get("confirmation_timeout_minutes", 10)
+                    notifications.append(
+                        _build_daily_review(entry, plan, milestone, timeout)
+                    )
+
+        # Timeout check: if evening review sent, not confirmed, and timeout passed
+        timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
+        if check_review_timeout(entry["name"], timeout_minutes):
+            # Use cooldown to avoid re-notifying every 5 minutes
+            key = f"{entry['name']}:daily_timeout"
+            state = _load_state()
+            if _should_notify(state, key, "daily_timeout"):
+                result = auto_mark_incomplete(entry["name"])
+                if result:
+                    notifications.append(_build_daily_timeout(entry, plan))
+                    _save_state_after_timeout(entry["name"], "daily_timeout")
+
+        return notifications
+
+    @staticmethod
+    def _in_time_window(now: datetime, time_str: str, window_hours: int = 3) -> bool:
+        """Check if now is within [time_str, time_str + window_hours]."""
+        try:
+            parts = time_str.split(":")
+            target_h, target_m = int(parts[0]), int(parts[1])
+            target_minutes = target_h * 60 + target_m
+            now_minutes = now.hour * 60 + now.minute
+            window_minutes = window_hours * 60
+            return target_minutes <= now_minutes < target_minutes + window_minutes
+        except (ValueError, IndexError):
+            return False
+
+    # ── Daily reminder logic (end) ──
+
+def _get_active_milestone(plan: dict) -> dict | None:
+    """Get the first in_progress or pending milestone."""
+    for m in plan.get("milestones", []):
+        if m["status"] == "in_progress":
+            return m
+    for m in plan.get("milestones", []):
+        if m["status"] == "pending":
+            return m
+    return None
+
+
+def _today_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _save_state_after_timeout(plan_name: str, ntype: str) -> None:
+    """Record a timeout notification in the reminder state for cooldown."""
+    state = _load_state()
+    key = f"{plan_name}:daily_timeout"
+    state[key] = {"type": ntype, "time": _now_iso()}
+    _save_state(state)
+
+
+# ── Daily notification builders ──
+
+def _build_daily_checkin(entry: dict, plan: dict, milestone: dict | None, archived: dict | None) -> dict:
+    """Build morning daily check-in notification."""
+    today = _today_str()
+    plan_title = entry.get("title", entry["name"])
+    goal = plan.get("goal", "")
+    target_end = entry.get("target_end_date", "")
+
+    msg_parts = [
+        f"☀ 早上好！今天是 {today}，开始新的一天吧！",
+        f"",
+        f"计划：{plan_title}",
+        f"目标：{goal}",
+        f"目标完成日期：{target_end}",
+    ]
+
+    if milestone:
+        msg_parts.append(f"")
+        msg_parts.append(f"当前里程碑：「{milestone['title']}」")
+        msg_parts.append(f"进度：{milestone.get('completion_pct', 0)}%")
+        msg_parts.append(f"目标日期：{milestone.get('target_date', '')}")
+        msg_parts.append(f"预计工时：{milestone.get('effort_hours_estimate', 0)}h")
+
+    if archived:
+        msg_parts.append(f"")
+        msg_parts.append(f"📋 昨日补确认（来自 {archived.get('from_date', '')}）：")
+        msg_parts.append(f"   状态：{archived.get('completion_status', '')}")
+        if archived.get("notes"):
+            msg_parts.append(f"   备注：{archived['notes']}")
+
+    msg_parts.append(f"")
+    msg_parts.append(f"准备好了吗？开始今天的打卡吧！")
+
+    return {
+        "plan_name": entry["name"],
+        "milestone_id": milestone["id"] if milestone else "",
+        "milestone_title": milestone["title"] if milestone else "",
+        "message": "\n".join(msg_parts),
+        "type": "daily_checkin",
+        "plan_title": plan_title,
+        "goal": goal,
+        "milestone": milestone,
+        "archived_confirmation": archived,
+    }
+
+
+def _build_daily_review(entry: dict, plan: dict, milestone: dict | None, timeout_minutes: int) -> dict:
+    """Build evening daily review confirmation notification."""
+    plan_title = entry.get("title", entry["name"])
+
+    msg_parts = [
+        f"🌙 晚上好！今天计划执行得如何？",
+        f"",
+        f"计划：{plan_title}",
+    ]
+
+    if milestone:
+        progress = milestone.get("completion_pct", 0)
+        msg_parts.append(f"当前里程碑：「{milestone['title']}」（进度 {progress}%）")
+
+    msg_parts.append(f"")
+    msg_parts.append(f"请确认今天的完成情况：")
+    msg_parts.append(f"  ✅ 已完成 (completed)")
+    msg_parts.append(f"  📌 部分完成 (partial)")
+    msg_parts.append(f"  ❌ 未完成 (incomplete)")
+    msg_parts.append(f"")
+    msg_parts.append(f"⏰ 请在 {timeout_minutes} 分钟内回复，超时将自动标记为未完成。")
+
+    return {
+        "plan_name": entry["name"],
+        "milestone_id": milestone["id"] if milestone else "",
+        "milestone_title": milestone["title"] if milestone else "",
+        "message": "\n".join(msg_parts),
+        "type": "daily_review",
+        "plan_title": plan_title,
+        "goal": plan.get("goal", ""),
+        "milestone": milestone,
+        "timeout_minutes": timeout_minutes,
+    }
+
+
+def _build_daily_timeout(entry: dict, plan: dict) -> dict:
+    """Build timeout auto-mark notification."""
+    plan_title = entry.get("title", entry["name"])
+
+    msg_parts = [
+        f"⏰ 超时通知",
+        f"",
+        f"计划「{plan_title}」的晚间确认已超时，系统已自动将今天的计划标记为「未完成」。",
+        f"",
+        f"如需补确认，请使用 daily_confirm 工具，确认将归档到明天的记录中。",
+    ]
+
+    return {
+        "plan_name": entry["name"],
+        "milestone_id": "",
+        "milestone_title": "",
+        "message": "\n".join(msg_parts),
+        "type": "daily_timeout",
+        "plan_title": plan_title,
+    }
+
+
+# ── Milestone notification builders ──
 
 def _build_overdue(m, entry, days):
     ago = abs(days)

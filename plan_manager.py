@@ -57,6 +57,11 @@ def create_plan(
             "before_due_days": 3,
             "weekly_checkin_day": "monday",
             "weekly_checkin_time": "09:00",
+            "daily_checkin_time": "08:30",
+            "daily_review_time": "21:30",
+            "daily_checkin_enabled": True,
+            "daily_review_enabled": True,
+            "confirmation_timeout_minutes": 10,
             "notification_channels": ["mcp"],
             "email": {
                 "enabled": False,
