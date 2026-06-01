@@ -20,6 +20,7 @@
 - **进度打卡** — 记录每个里程碑的完成百分比、投入时间、心得体会、阻碍和心情
 - **计划分析** — 计算进度偏差、节奏系数、剩余工时预估、心情趋势
 - **定时提醒** — 后台线程每 5 分钟轮询，检测过期/即将到期/停滞的里程碑
+- **每日提醒** — 早晚两次提醒：早晨进度提醒（默认 08:30）+ 晚间完成确认（默认 21:30），支持 10 分钟超时自动判定
 - **多通道通知** — 支持 MCP 通道和邮件通知（邮件可选配置）
 
 ### 环境要求
@@ -80,10 +81,16 @@ pip install mcp
 |------|------|
 | `checkin_add` | 记录一次进度打卡 |
 
+#### 每日确认 (Daily)
+| 工具 | 说明 |
+|------|------|
+| `daily_confirm` | 确认当天计划完成情况 |
+| `daily_status` | 查看当天提醒和确认状态 |
+
 #### 提醒 (Reminder)
 | 工具 | 说明 |
 |------|------|
-| `reminder_configure` | 配置提醒参数 |
+| `reminder_configure` | 配置提醒参数（含每日提醒时间） |
 | `reminder_toggle` | 开启/关闭提醒 |
 | `reminder_check_now` | 手动触发一次检查 |
 | `email_configure` | 配置邮件通知 |
@@ -117,6 +124,14 @@ Checkin
 
 ### 提醒机制
 
+#### 每日提醒
+- **早晨进度提醒**（默认 08:30）— 提醒当天的计划安排和当前里程碑
+- **晚间完成确认**（默认 21:30）— 确认当天计划完成情况（已完成/部分完成/未完成）
+- **10 分钟超时** — 晚间确认发出后 10 分钟内未回复，自动标记为未完成
+- **补确认归档** — 超时后的补确认将归档到第二天的计划记录中
+- 两种提醒的触发时间均可在 `reminder_configure` 中自定义
+
+#### 里程碑提醒
 - 后台线程每 5 分钟检查一次所有计划
 - 过期里程碑（超过目标日期未完成）→ 推送提醒
 - 即将到期（before_due_days 内）→ 推送提醒
@@ -131,8 +146,9 @@ plan-tracker/
 ├── server.py              # FastMCP 服务入口
 ├── plan_manager.py        # Plan CRUD + 分析
 ├── milestone_manager.py   # 里程碑 + 打卡操作
+├── daily_tracker.py       # 每日状态管理（提醒/确认/超时/归档）
 ├── storage.py             # JSON 文件存储
-├── reminder.py            # 后台提醒引擎
+├── reminder.py            # 后台提醒引擎（含每日提醒）
 ├── notification/
 │   ├── __init__.py
 │   ├── base.py            # 通知通道基类
@@ -165,7 +181,8 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 - **Milestones** — Add and update milestones, view current and upcoming ones
 - **Check-ins** — Record progress percentage, time spent, notes, blockers, and morale for each milestone
 - **Analysis** — Progress deviation, pace ratio, remaining effort estimates, morale trends
-- **Reminders** — Background thread polls every 5 minutes for overdue, upcoming, and stale milestones
+- **Daily Reminders** — Morning check-in (default 08:30) + evening review (default 21:30) with 10-min auto-timeout
+- **Milestone Reminders** — Background thread polls every 5 minutes for overdue, upcoming, and stale milestones
 - **Multi-channel** — MCP channel and email notifications (email is optional)
 
 ### Requirements

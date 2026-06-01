@@ -95,6 +95,67 @@ Plan Tracker · {send_time}
 此邮件由计划跟踪系统自动发送，请勿回复。
 """
 
+TPL_DAILY_CHECKIN = """\
+╔══════════════════════════════════════════════════╗
+║          Plan Tracker — 每日进度提醒             ║
+╚══════════════════════════════════════════════════╝
+
+计划：{plan_title}
+目标：{goal}
+目标完成日期：{target_end_date}
+当前里程碑：{milestone_title}
+当前进度：{progress_pct}%
+
+☀ 新的一天开始了，祝你顺利完成今天的计划！
+
+建议：花几分钟回顾今天的计划安排，
+运行 plan-tracker check-in 记录最新进度。
+
+---
+Plan Tracker · {send_time}
+此邮件由计划跟踪系统自动发送，请勿回复。
+"""
+
+TPL_DAILY_REVIEW = """\
+╔══════════════════════════════════════════════════╗
+║          Plan Tracker — 每日进度确认             ║
+╚══════════════════════════════════════════════════╝
+
+计划：{plan_title}
+当前里程碑：{milestone_title}
+当前进度：{progress_pct}%
+
+🌙 今天的计划执行得如何？
+
+请在 {timeout_minutes} 分钟内回复确认完成情况：
+  ✅ 已完成 (completed)
+  📌 部分完成 (partial)
+  ❌ 未完成 (incomplete)
+
+超时未确认将自动标记为「未完成」。
+
+---
+Plan Tracker · {send_time}
+此邮件由计划跟踪系统自动发送，请勿回复。
+"""
+
+TPL_DAILY_TIMEOUT = """\
+╔══════════════════════════════════════════════════╗
+║          Plan Tracker — 超时通知                 ║
+╚══════════════════════════════════════════════════╝
+
+计划：{plan_title}
+
+⏰ 今天的晚间确认已超时，系统已将计划自动标记为「未完成」。
+
+如需补确认，请运行 daily_confirm 工具，
+补确认将归档到明天的计划记录中。
+
+---
+Plan Tracker · {send_time}
+此邮件由计划跟踪系统自动发送，请勿回复。
+"""
+
 
 class EmailChannel(NotificationChannel):
     """Email notification via plan-tracker email API (mail.tempbox.cn)."""
@@ -132,6 +193,9 @@ class EmailChannel(NotificationChannel):
                     "upcoming": "里程碑即将到期",
                     "stale": "进度更新提醒",
                     "weekly": "每周进度回顾",
+                    "daily_checkin": "每日进度提醒",
+                    "daily_review": "每日进度确认",
+                    "daily_timeout": "超时通知",
                 }
                 label = type_labels.get(ntype, "")
                 if milestone_title:
@@ -189,6 +253,12 @@ class EmailChannel(NotificationChannel):
             return TPL_STALE.format(**fmt)
         elif ntype == "weekly":
             return TPL_WEEKLY.format(**fmt)
+        elif ntype == "daily_checkin":
+            return TPL_DAILY_CHECKIN.format(**fmt)
+        elif ntype == "daily_review":
+            return TPL_DAILY_REVIEW.format(**fmt)
+        elif ntype == "daily_timeout":
+            return TPL_DAILY_TIMEOUT.format(**fmt)
         else:
             return self._format_plain(
                 data.get("message", ""),
