@@ -18,10 +18,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from storage import INDEX_FILE, load_plan, load_index
-from notification import EmailChannel
-from notification_queue import enqueue as enqueue_notification
-from daily_tracker import (
+from plan_tracker.storage import INDEX_FILE, DATA_DIR, load_plan, load_index
+from plan_tracker.notification import EmailChannel
+from plan_tracker.notification_queue import enqueue as enqueue_notification
+from plan_tracker.daily_tracker import (
     get_today_state,
     record_checkin_reminded,
     record_review_reminded,
@@ -34,7 +34,7 @@ logger = logging.getLogger("plan_tracker.reminder")
 
 CHECK_INTERVAL = 300
 NOTIFICATION_COOLDOWN_HOURS = 12
-STATE_FILE = Path.home() / "mcp-servers" / "plan-tracker" / "data" / ".reminder_state.json"
+STATE_FILE = DATA_DIR / ".reminder_state.json"
 
 
 class ReminderEngine:

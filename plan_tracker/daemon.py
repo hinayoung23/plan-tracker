@@ -16,13 +16,8 @@ import sys
 import time
 from pathlib import Path
 
-# Ensure the server directory is on sys.path for imports
-SERVER_DIR = Path(__file__).resolve().parent
-if str(SERVER_DIR) not in sys.path:
-    sys.path.insert(0, str(SERVER_DIR))
-
-from reminder import ReminderEngine
-from storage import DATA_DIR
+from plan_tracker.reminder import ReminderEngine
+from plan_tracker.storage import DATA_DIR
 
 PID_FILE = DATA_DIR / "daemon.pid"
 LOG_FILE = DATA_DIR / "daemon.log"

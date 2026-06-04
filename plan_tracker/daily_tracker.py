@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from storage import DATA_DIR
+from plan_tracker.storage import DATA_DIR
 
 logger = logging.getLogger("plan_tracker.daily")
 

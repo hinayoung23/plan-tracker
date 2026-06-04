@@ -9,7 +9,7 @@ metadata:
       mcp:
         name: "plan-tracker"
         command: "~/mcp-servers/plan-tracker/.venv/bin/python3"
-        args: ["~/mcp-servers/plan-tracker/server.py"]
+        args: ["-m", "plan_tracker.server"]
 ---
 
 # Plan Tracker

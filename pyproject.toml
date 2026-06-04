@@ -1,11 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "plan-tracker"
-version = "1.0.0"
-description = "MCP Server for long-term plan tracking with milestone management and reminders"
+version = "1.1.0"
+description = "MCP Server for long-term plan tracking with milestone management, daily reminders, and standalone daemon"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.12"
+authors = [
+    { name = "hinayoung23" },
+]
+keywords = ["mcp", "plan", "tracker", "reminder", "milestone", "productivity"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Scheduling",
+]
 dependencies = [
     "mcp>=1.0.0",
 ]
 
 [project.scripts]
-plan-tracker = "server:main"
+plan-tracker-mcp = "plan_tracker.server:main"
+plan-tracker-daemon = "plan_tracker.daemon:main"
+plan-tracker-cli = "plan_tracker.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/hinayoung23/plan-tracker"
+Repository = "https://github.com/hinayoung23/plan-tracker"
+Issues = "https://github.com/hinayoung23/plan-tracker/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["plan_tracker"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "plan_tracker/**",
+    "skill/**",
+    "data/.gitkeep",
+    "README.md",
+    "LICENSE",
+]

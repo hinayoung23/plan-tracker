@@ -5,7 +5,7 @@ Validates plan structure, manages plan index, delegates milestone operations.
 
 from datetime import datetime, timezone
 
-from storage import (
+from plan_tracker.storage import (
     load_plan,
     save_plan,
     delete_plan_file,

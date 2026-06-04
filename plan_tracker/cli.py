@@ -15,12 +15,8 @@ import signal
 import sys
 from pathlib import Path
 
-SERVER_DIR = Path(__file__).resolve().parent
-if str(SERVER_DIR) not in sys.path:
-    sys.path.insert(0, str(SERVER_DIR))
-
-from daemon import is_running, read_pid, remove_pid, PID_FILE
-from notification_queue import fetch_all, get_pending_text, mark_delivered
+from plan_tracker.daemon import is_running, read_pid, remove_pid, PID_FILE
+from plan_tracker.notification_queue import fetch_all, get_pending_text, mark_delivered
 
 
 def cmd_daemon_start() -> None:
@@ -30,8 +26,9 @@ def cmd_daemon_start() -> None:
         return
 
     import subprocess
+    daemon_script = Path(__file__).resolve().parent / "daemon.py"
     proc = subprocess.Popen(
-        [sys.executable, str(SERVER_DIR / "daemon.py"), "--daemon"],
+        [sys.executable, str(daemon_script), "--daemon"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,

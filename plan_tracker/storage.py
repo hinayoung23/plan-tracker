@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DATA_DIR = Path.home() / "mcp-servers" / "plan-tracker" / "data"
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 INDEX_FILE = DATA_DIR / "plan-index.json"
 
 

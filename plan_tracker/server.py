@@ -6,17 +6,9 @@ check-ins, progress analysis, and scheduled reminders.
 
 import json
 import logging
-import sys
-from pathlib import Path
-
-# Ensure the server directory is on sys.path for imports
-SERVER_DIR = Path(__file__).resolve().parent
-if str(SERVER_DIR) not in sys.path:
-    sys.path.insert(0, str(SERVER_DIR))
-
 from mcp.server.fastmcp import FastMCP
 
-from plan_manager import (
+from plan_tracker.plan_manager import (
     create_plan,
     get_plan,
     list_plans,
@@ -24,15 +16,15 @@ from plan_manager import (
     delete_plan,
     get_plan_analysis,
 )
-from milestone_manager import (
+from plan_tracker.milestone_manager import (
     add_milestone,
     update_milestone,
     add_checkin,
     get_current_milestone,
     get_upcoming_milestones,
 )
-from notification_queue import fetch_all, mark_delivered
-from daily_tracker import (
+from plan_tracker.notification_queue import fetch_all, mark_delivered
+from plan_tracker.daily_tracker import (
     get_today_state,
     record_confirmation,
     check_review_timeout,
@@ -189,7 +181,7 @@ async def checkin_add(
 @mcp.tool()
 async def reminder_configure(plan_name: str, config: dict) -> str:
     """Configure reminders for a plan. config keys: enabled, before_due_days, weekly_checkin_day, weekly_checkin_time, daily_checkin_time, daily_review_time, daily_checkin_enabled, daily_review_enabled, confirmation_timeout_minutes, notification_channels."""
-    from storage import load_plan, save_plan
+    from plan_tracker.storage import load_plan, save_plan
 
     plan = load_plan(plan_name)
     if plan is None:
@@ -213,7 +205,7 @@ async def reminder_configure(plan_name: str, config: dict) -> str:
 @mcp.tool()
 async def reminder_toggle(plan_name: str, enabled: bool) -> str:
     """Enable or disable reminders for a plan."""
-    from storage import load_plan, save_plan
+    from plan_tracker.storage import load_plan, save_plan
 
     plan = load_plan(plan_name)
     if plan is None:
@@ -248,7 +240,7 @@ async def daily_confirm(plan_name: str, status: str, notes: str = "") -> str:
 @mcp.tool()
 async def daily_status(plan_name: str) -> str:
     """Get today's reminder and confirmation status for a plan."""
-    from storage import load_plan
+    from plan_tracker.storage import load_plan
 
     plan = load_plan(plan_name)
     if plan is None:
@@ -292,7 +284,7 @@ async def daily_status(plan_name: str) -> str:
 @mcp.tool()
 async def email_configure(plan_name: str, config: dict) -> str:
     """Configure email notifications (premium feature). config: enabled, api_url, api_key, recipient."""
-    from storage import load_plan, save_plan
+    from plan_tracker.storage import load_plan, save_plan
 
     plan = load_plan(plan_name)
     if plan is None:

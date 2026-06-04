@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from storage import load_plan, save_plan, update_index_entry
+from plan_tracker.storage import load_plan, save_plan, update_index_entry
 
 VALID_STATUSES = ("pending", "in_progress", "completed", "blocked")
 VALID_MORALE = ("struggling", "neutral", "good", "great")
