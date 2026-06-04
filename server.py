@@ -31,7 +31,7 @@ from milestone_manager import (
     get_current_milestone,
     get_upcoming_milestones,
 )
-from reminder import ReminderEngine
+from notification_queue import fetch_all, mark_delivered
 from daily_tracker import (
     get_today_state,
     record_confirmation,
@@ -43,7 +43,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("plan_tracker.server")
 
 mcp = FastMCP("plan-tracker")
-reminder = ReminderEngine()
 
 
 def _json_response(data: dict) -> str:
@@ -319,12 +318,33 @@ async def reminder_check_now() -> str:
     return _json_response({"success": True, "message": "Check completed."})
 
 
+# ── Notification queue tools ──
+
+@mcp.tool()
+async def notification_fetch() -> str:
+    """Fetch pending reminder notifications from the daemon queue."""
+    pending = fetch_all()
+    return _json_response({
+        "success": True,
+        "count": len(pending),
+        "notifications": pending,
+    })
+
+
+@mcp.tool()
+async def notification_ack(notification_ids: list[str]) -> str:
+    """Mark notifications as delivered after they have been sent to the user."""
+    count = mark_delivered(notification_ids)
+    return _json_response({
+        "success": True,
+        "acknowledged": count,
+    })
+
+
 def main():
-    reminder.start()
-    try:
-        mcp.run()
-    finally:
-        reminder.stop()
+    # Reminder engine now runs in the standalone daemon (daemon.py).
+    # The MCP server only handles tool calls.
+    mcp.run()
 
 
 if __name__ == "__main__":

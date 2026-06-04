@@ -14,6 +14,10 @@ data/*.json
 # Keep the data directory
 !data/.gitkeep
 
+# Daemon runtime files
+data/daemon.pid
+data/daemon.log
+
 # Environment
 .env
 .env.local

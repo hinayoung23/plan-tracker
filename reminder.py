@@ -19,7 +19,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from storage import INDEX_FILE, load_plan, load_index
-from notification import McpChannel, EmailChannel
+from notification import EmailChannel
+from notification_queue import enqueue as enqueue_notification
 from daily_tracker import (
     get_today_state,
     record_checkin_reminded,
@@ -41,7 +42,6 @@ class ReminderEngine:
     def __init__(self):
         self._thread = None
         self._stop = threading.Event()
-        self._mcp = McpChannel()
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -140,10 +140,21 @@ class ReminderEngine:
 
             mtitle = note.get("milestone_title", "")
             mid = note.get("milestone_id", "")
+            plan_title = note.get("plan_title", plan_name)
+            ntype = note.get("type", "info")
 
             for ch in channels:
                 if ch == "mcp":
-                    self._mcp.send(note["message"], plan_name, mtitle, mid)
+                    # Write to notification queue instead of direct stderr.
+                    # The queue is read by CLI / MCP notification_fetch tool.
+                    enqueue_notification(
+                        plan_name=plan_name,
+                        ntype=ntype,
+                        message=note["message"],
+                        plan_title=plan_title,
+                        milestone_title=mtitle,
+                        milestone_id=mid,
+                    )
                 elif ch == "email":
                     ecfg = plan.get("reminders", {}).get("email", {})
                     if ecfg.get("enabled"):
