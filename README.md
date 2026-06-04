@@ -122,6 +122,33 @@ Checkin
 └── morale          (struggling | neutral | good | great)
 ```
 
+### 部署（首次使用）
+
+Plan Tracker 的提醒功能通过**独立守护进程**运行，不依赖任何特定 agent 框架。
+
+```bash
+# 启动守护进程
+python cli.py daemon start
+
+# 查看状态
+python cli.py daemon status
+
+# 停止
+python cli.py daemon stop
+```
+
+守护进程将提醒通知写入 `data/notification_queue.json`。外部系统通过以下方式读取通知：
+
+```bash
+# CLI 方式（适合 cron / agent 轮询）
+python cli.py notifications
+
+# MCP 方式（适合 AI agent 调用）
+# 使用 notification_fetch 和 notification_ack 工具
+```
+
+集成到 OpenClaw / QQBot 等 agent 框架时，只需配置一个定时任务（如每 5 分钟）轮询 `python cli.py notifications`，有输出则转发给用户。
+
 ### 提醒机制
 
 #### 每日提醒
@@ -143,12 +170,15 @@ Checkin
 
 ```
 plan-tracker/
-├── server.py              # FastMCP 服务入口
+├── daemon.py              # 独立守护进程（提醒引擎常驻运行）
+├── server.py              # FastMCP 工具服务入口
+├── cli.py                 # 命令行管理工具
+├── notification_queue.py  # 通知队列（daemon 写，外部系统读）
 ├── plan_manager.py        # Plan CRUD + 分析
 ├── milestone_manager.py   # 里程碑 + 打卡操作
 ├── daily_tracker.py       # 每日状态管理（提醒/确认/超时/归档）
 ├── storage.py             # JSON 文件存储
-├── reminder.py            # 后台提醒引擎（含每日提醒）
+├── reminder.py            # 提醒引擎逻辑
 ├── notification/
 │   ├── __init__.py
 │   ├── base.py            # 通知通道基类
@@ -200,7 +230,34 @@ source .venv/bin/activate
 pip install mcp
 ```
 
-### Configuration
+### Deployment
+
+The reminder engine runs as a standalone daemon, independent of any agent framework:
+
+```bash
+# Start the daemon
+python cli.py daemon start
+
+# Check status
+python cli.py daemon status
+
+# Stop
+python cli.py daemon stop
+```
+
+The daemon writes notifications to `data/notification_queue.json`. External systems read them via:
+
+```bash
+# CLI (for cron / agent polling)
+python cli.py notifications
+
+# MCP (for AI agents)
+# Use notification_fetch and notification_ack tools
+```
+
+To integrate with OpenClaw / QQBot or similar, set up a periodic task (e.g. every 5 minutes) that polls `python cli.py notifications` and forwards any output to the user.
+
+### MCP Configuration
 
 Add to your `openclaw.json` or Claude Code MCP config:
 
