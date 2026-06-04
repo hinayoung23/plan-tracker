@@ -31,14 +31,16 @@
 ### 安装
 
 ```bash
-# 克隆仓库
+# 方式一：从 PyPI 安装（推荐）
+pip install plan-tracker
+
+# 方式二：从 GitHub Releases 安装
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.1.0/plan_tracker-1.1.0-py3-none-any.whl
+
+# 方式三：从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
 cd plan-tracker
-
-# 创建虚拟环境并安装依赖
-python3 -m venv .venv
-source .venv/bin/activate
-pip install mcp
+pip install -e .
 ```
 
 ### 配置到 Claude Code / OpenClaw
@@ -49,8 +51,21 @@ pip install mcp
 {
   "mcpServers": {
     "plan-tracker": {
+      "command": "python3",
+      "args": ["-m", "plan_tracker.server"]
+    }
+  }
+}
+```
+
+如果是从源码安装且使用虚拟环境，路径示例：
+
+```json
+{
+  "mcpServers": {
+    "plan-tracker": {
       "command": "/path/to/plan-tracker/.venv/bin/python3",
-      "args": ["/path/to/plan-tracker/server.py"]
+      "args": ["-m", "plan_tracker.server"]
     }
   }
 }
@@ -127,27 +142,28 @@ Checkin
 Plan Tracker 的提醒功能通过**独立守护进程**运行，不依赖任何特定 agent 框架。
 
 ```bash
-# 启动守护进程
-python cli.py daemon start
+# 如果通过 pip 安装
+plan-tracker-cli daemon start
 
-# 查看状态
-python cli.py daemon status
+# 或使用模块方式
+python -m plan_tracker.cli daemon start
 
-# 停止
-python cli.py daemon stop
+# 查看状态 / 停止
+python -m plan_tracker.cli daemon status
+python -m plan_tracker.cli daemon stop
 ```
 
 守护进程将提醒通知写入 `data/notification_queue.json`。外部系统通过以下方式读取通知：
 
 ```bash
 # CLI 方式（适合 cron / agent 轮询）
-python cli.py notifications
+python -m plan_tracker.cli notifications
 
 # MCP 方式（适合 AI agent 调用）
 # 使用 notification_fetch 和 notification_ack 工具
 ```
 
-集成到 OpenClaw / QQBot 等 agent 框架时，只需配置一个定时任务（如每 5 分钟）轮询 `python cli.py notifications`，有输出则转发给用户。
+集成到 OpenClaw / QQBot 等 agent 框架时，只需配置一个定时任务（如每 5 分钟）轮询，有输出则转发给用户。
 
 ### 提醒机制
 
@@ -223,11 +239,16 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 ### Installation
 
 ```bash
+# Option 1: From PyPI (recommended)
+pip install plan-tracker
+
+# Option 2: From GitHub Releases
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.1.0/plan_tracker-1.1.0-py3-none-any.whl
+
+# Option 3: From source
 git clone https://github.com/hinayoung23/plan-tracker.git
 cd plan-tracker
-python3 -m venv .venv
-source .venv/bin/activate
-pip install mcp
+pip install -e .
 ```
 
 ### Deployment
@@ -235,27 +256,23 @@ pip install mcp
 The reminder engine runs as a standalone daemon, independent of any agent framework:
 
 ```bash
-# Start the daemon
-python cli.py daemon start
-
-# Check status
-python cli.py daemon status
-
-# Stop
-python cli.py daemon stop
+# Start / status / stop
+plan-tracker-cli daemon start
+python -m plan_tracker.cli daemon status
+python -m plan_tracker.cli daemon stop
 ```
 
 The daemon writes notifications to `data/notification_queue.json`. External systems read them via:
 
 ```bash
 # CLI (for cron / agent polling)
-python cli.py notifications
+python -m plan_tracker.cli notifications
 
 # MCP (for AI agents)
 # Use notification_fetch and notification_ack tools
 ```
 
-To integrate with OpenClaw / QQBot or similar, set up a periodic task (e.g. every 5 minutes) that polls `python cli.py notifications` and forwards any output to the user.
+To integrate with OpenClaw / QQBot or similar, set up a periodic task (e.g. every 5 minutes) that polls for notifications and forwards any output to the user.
 
 ### MCP Configuration
 
@@ -265,8 +282,8 @@ Add to your `openclaw.json` or Claude Code MCP config:
 {
   "mcpServers": {
     "plan-tracker": {
-      "command": "/path/to/plan-tracker/.venv/bin/python3",
-      "args": ["/path/to/plan-tracker/server.py"]
+      "command": "python3",
+      "args": ["-m", "plan_tracker.server"]
     }
   }
 }
