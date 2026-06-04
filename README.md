@@ -31,13 +31,10 @@
 ### 安装
 
 ```bash
-# 方式一：从 PyPI 安装（推荐）
-pip install plan-tracker
-
-# 方式二：从 GitHub Releases 安装
+# 从 GitHub Releases 安装
 pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.1.0/plan_tracker-1.1.0-py3-none-any.whl
 
-# 方式三：从源码安装
+# 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
 cd plan-tracker
 pip install -e .
@@ -239,13 +236,10 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 ### Installation
 
 ```bash
-# Option 1: From PyPI (recommended)
-pip install plan-tracker
-
-# Option 2: From GitHub Releases
+# From GitHub Releases
 pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.1.0/plan_tracker-1.1.0-py3-none-any.whl
 
-# Option 3: From source
+# Or from source
 git clone https://github.com/hinayoung23/plan-tracker.git
 cd plan-tracker
 pip install -e .
