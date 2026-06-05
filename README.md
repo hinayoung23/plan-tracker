@@ -19,9 +19,10 @@
 - **里程碑管理** — 添加/更新里程碑，查看当前和即将到期的里程碑
 - **进度打卡** — 记录每个里程碑的完成百分比、投入时间、心得体会、阻碍和心情
 - **计划分析** — 计算进度偏差、节奏系数、剩余工时预估、心情趋势
-- **定时提醒** — 后台线程每 5 分钟轮询，检测过期/即将到期/停滞的里程碑
+- **定时提醒** — 守护进程每 5 分钟轮询，检测过期/即将到期/停滞的里程碑
 - **每日提醒** — 早晚两次提醒：早晨进度提醒（默认 08:30）+ 晚间完成确认（默认 21:30），支持 10 分钟超时自动判定
-- **多通道通知** — 支持 MCP 通道和邮件通知（邮件可选配置）
+- **自动拉起** — MCP Server 启动时自动检查并拉起守护进程，附带 watchdog 线程守护存活
+- **多通道通知** — 支持 MCP 通道和邮件通知；通过 OpenClaw cron 定时轮询 + QQBot 推送到 QQ
 
 ### 环境要求
 
@@ -136,31 +137,58 @@ Checkin
 
 ### 部署（首次使用）
 
-Plan Tracker 的提醒功能通过**独立守护进程**运行，不依赖任何特定 agent 框架。
+Plan Tracker 的提醒功能通过**独立守护进程**运行。守护进程支持两种自动拉起方式，无需手动管理：
+
+#### 方式一：MCP Server 自动拉起（推荐）
+
+当 AI 助手首次调用 plan-tracker MCP 工具时，`server.py` 会自动检查并启动守护进程，同时启动 watchdog 线程每 5 分钟检测守护进程存活状态，挂了自动拉起。
 
 ```bash
-# 如果通过 pip 安装
-plan-tracker-cli daemon start
+# 无需手动操作 —— MCP Server 启动时自动完成
+```
 
-# 或使用模块方式
+#### 方式二：CLI 轮询自愈
+
+`notifications --ack` 命令在执行前会自动检查守护进程是否在运行，未运行则自动拉起。配合定时任务即可实现全自动运维。
+
+```bash
+# 查看通知（自动拉起守护进程 + 标记已投递）
+python -m plan_tracker.cli notifications --ack
+
+# 单独管理守护进程（一般不需要）
 python -m plan_tracker.cli daemon start
-
-# 查看状态 / 停止
 python -m plan_tracker.cli daemon status
 python -m plan_tracker.cli daemon stop
 ```
 
-守护进程将提醒通知写入 `data/notification_queue.json`。外部系统通过以下方式读取通知：
+#### 集成到 OpenClaw / QQBot
 
-```bash
-# CLI 方式（适合 cron / agent 轮询）
-python -m plan_tracker.cli notifications
+在 OpenClaw 的 cron 配置（`~/.openclaw/cron/jobs.json`）中添加定时轮询任务，每 5 分钟拉取通知并通过 QQBot 推送：
 
-# MCP 方式（适合 AI agent 调用）
-# 使用 notification_fetch 和 notification_ack 工具
+```json
+{
+  "id": "plan-tracker-notification-check",
+  "name": "plan-tracker Notification Check",
+  "enabled": true,
+  "schedule": { "kind": "every", "everyMs": 300000 },
+  "sessionTarget": "isolated",
+  "wakeMode": "now",
+  "payload": {
+    "kind": "agentTurn",
+    "message": "exec python -m plan_tracker.cli notifications --ack。如果输出为空则回复NO_REPLY，否则原样发送给用户。",
+    "lightContext": true,
+    "timeoutSeconds": 30
+  },
+  "delivery": {
+    "mode": "announce",
+    "channel": "qqbot",
+    "to": "qqbot:c2c:<你的QQ号>",
+    "accountId": "default"
+  }
+}
 ```
 
-集成到 OpenClaw / QQBot 等 agent 框架时，只需配置一个定时任务（如每 5 分钟）轮询，有输出则转发给用户。
+守护进程将提醒通知写入 `data/notification_queue.json`，cron 任务定时拉取并投递。`--ack` 参数确保每条通知只投递一次。
 
 ### 提醒机制
 
@@ -225,8 +253,9 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 - **Check-ins** — Record progress percentage, time spent, notes, blockers, and morale for each milestone
 - **Analysis** — Progress deviation, pace ratio, remaining effort estimates, morale trends
 - **Daily Reminders** — Morning check-in (default 08:30) + evening review (default 21:30) with 10-min auto-timeout
-- **Milestone Reminders** — Background thread polls every 5 minutes for overdue, upcoming, and stale milestones
-- **Multi-channel** — MCP channel and email notifications (email is optional)
+- **Milestone Reminders** — Daemon polls every 5 minutes for overdue, upcoming, and stale milestones
+- **Auto-start Daemon** — MCP Server auto-starts the daemon on first use with a watchdog thread; CLI `--ack` also self-heals
+- **Multi-channel** — MCP channel + email; OpenClaw cron + QQBot integration for push notifications
 
 ### Requirements
 
@@ -247,26 +276,58 @@ pip install -e .
 
 ### Deployment
 
-The reminder engine runs as a standalone daemon, independent of any agent framework:
+The reminder engine runs as a standalone daemon with **auto-start** — no manual process management needed.
+
+#### Auto-start via MCP Server (recommended)
+
+When an AI assistant first calls a plan-tracker MCP tool, `server.py` automatically checks and starts the daemon, plus launches a watchdog thread that revives it every 5 minutes if it dies.
 
 ```bash
-# Start / status / stop
+# No manual action needed — MCP Server handles it on first use
+```
+
+#### Self-healing via CLI polling
+
+The `notifications --ack` command auto-starts the daemon before fetching, so any periodic polling task also keeps the daemon alive.
+
+```bash
+# Fetch notifications (auto-starts daemon + marks delivered)
+python -m plan_tracker.cli notifications --ack
+
+# Manual daemon management (normally not needed)
 plan-tracker-cli daemon start
 python -m plan_tracker.cli daemon status
 python -m plan_tracker.cli daemon stop
 ```
 
-The daemon writes notifications to `data/notification_queue.json`. External systems read them via:
+#### OpenClaw / QQBot integration
 
-```bash
-# CLI (for cron / agent polling)
-python -m plan_tracker.cli notifications
+Add a cron job to OpenClaw (`~/.openclaw/cron/jobs.json`) that polls every 5 minutes:
 
-# MCP (for AI agents)
-# Use notification_fetch and notification_ack tools
+```json
+{
+  "id": "plan-tracker-notification-check",
+  "name": "plan-tracker Notification Check",
+  "enabled": true,
+  "schedule": { "kind": "every", "everyMs": 300000 },
+  "sessionTarget": "isolated",
+  "wakeMode": "now",
+  "payload": {
+    "kind": "agentTurn",
+    "message": "exec python -m plan_tracker.cli notifications --ack. If output is empty reply NO_REPLY, otherwise forward to user.",
+    "lightContext": true,
+    "timeoutSeconds": 30
+  },
+  "delivery": {
+    "mode": "announce",
+    "channel": "qqbot",
+    "to": "qqbot:c2c:<your-qq-id>",
+    "accountId": "default"
+  }
+}
 ```
 
-To integrate with OpenClaw / QQBot or similar, set up a periodic task (e.g. every 5 minutes) that polls for notifications and forwards any output to the user.
+The daemon writes notifications to `data/notification_queue.json`. The cron job polls and delivers them. The `--ack` flag ensures each notification is delivered exactly once.
 
 ### MCP Configuration
 

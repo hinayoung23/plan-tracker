@@ -73,16 +73,33 @@ def cmd_daemon_status() -> None:
             print("Daemon is not running")
 
 
-def cmd_notifications(json_output: bool = False) -> None:
-    """Print pending notifications."""
+def cmd_notifications(json_output: bool = False, ack: bool = False) -> None:
+    """Print pending notifications.
+
+    When --ack is set, fetched notifications are immediately marked as
+    delivered so they are never sent twice.  Use this from cron / polling
+    loops that forward the output to the user.
+
+    Also auto-starts the daemon if it is not running, so that the
+    cron-driven poll is self-healing.
+    """
+    # Auto-start daemon if needed — self-healing for cron-driven polling
+    if not is_running():
+        cmd_daemon_start()
+
+    pending = fetch_all()
     if json_output:
-        pending = fetch_all()
         print(json.dumps(pending, ensure_ascii=False, indent=2))
     else:
         text = get_pending_text()
         if text:
             print(text, end="")
         # If empty, print nothing (allows "NO_REPLY" detection in cron)
+
+    if ack and pending:
+        ids = [n["id"] for n in pending]
+        count = mark_delivered(ids)
+        print(f"Auto-acked {count} notification(s)", file=sys.stderr)
 
 
 def cmd_ack(ids: list[str]) -> None:
@@ -102,6 +119,7 @@ def main() -> None:
     # notifications
     notif_parser = sub.add_parser("notifications", help="Show pending notifications")
     notif_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    notif_parser.add_argument("--ack", action="store_true", help="Mark notifications as delivered after fetching")
 
     # ack
     ack_parser = sub.add_parser("ack", help="Mark notifications as delivered")
@@ -117,7 +135,7 @@ def main() -> None:
         elif args.action == "status":
             cmd_daemon_status()
     elif args.command == "notifications":
-        cmd_notifications(json_output=args.json)
+        cmd_notifications(json_output=args.json, ack=args.ack)
     elif args.command == "ack":
         cmd_ack(args.ids)
     else:

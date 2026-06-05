@@ -2,10 +2,19 @@
 
 Provides tools for managing long-term plans with milestones,
 check-ins, progress analysis, and scheduled reminders.
+
+On startup, ensures the plan-tracker daemon is running and monitors
+its health, restarting it automatically if it dies.
 """
 
 import json
 import logging
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP
 
 from plan_tracker.plan_manager import (
@@ -333,9 +342,80 @@ async def notification_ack(notification_ids: list[str]) -> str:
     })
 
 
+# ── Daemon lifecycle management ──
+
+# How often the watchdog checks whether the daemon is still alive
+_DAEMON_WATCHDOG_INTERVAL = 300  # 5 minutes
+# Max wait time for daemon PID file to appear after launching
+_DAEMON_START_TIMEOUT = 10
+
+
+def _ensure_daemon() -> bool:
+    """Start the plan-tracker daemon if it is not already running.
+
+    Returns True if the daemon was already running or was started
+    successfully; False if the daemon could not be started.
+    """
+    from plan_tracker.daemon import is_running, read_pid
+
+    if is_running():
+        logger.debug("Daemon already running (PID: %d)", read_pid())
+        return True
+
+    logger.info("Daemon not running — starting...")
+    try:
+        daemon_script = Path(__file__).resolve().parent / "daemon.py"
+        proc = subprocess.Popen(
+            [sys.executable, str(daemon_script), "--daemon"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+        proc.wait(timeout=5)
+
+        # The daemon double-forks, so the direct child exits quickly.
+        # Give the grandchild a moment to write its PID file.
+        deadline = time.monotonic() + _DAEMON_START_TIMEOUT
+        while time.monotonic() < deadline:
+            if is_running():
+                logger.info("Daemon started (PID: %d)", read_pid())
+                return True
+            time.sleep(0.5)
+
+        logger.warning("Daemon did not appear after %ds — check daemon.log",
+                       _DAEMON_START_TIMEOUT)
+        return False
+    except Exception:
+        logger.exception("Failed to start daemon")
+        return False
+
+
+def _daemon_watchdog() -> None:
+    """Background thread: periodically check daemon health and restart if needed."""
+    from plan_tracker.daemon import is_running
+
+    while True:
+        time.sleep(_DAEMON_WATCHDOG_INTERVAL)
+        try:
+            if not is_running():
+                logger.warning("Watchdog: daemon has stopped — restarting...")
+                _ensure_daemon()
+        except Exception:
+            logger.exception("Watchdog check failed")
+
+
 def main():
-    # Reminder engine now runs in the standalone daemon (daemon.py).
-    # The MCP server only handles tool calls.
+    # Ensure the reminder daemon is running (auto-start if needed)
+    _ensure_daemon()
+
+    # Background thread that revives the daemon if it dies
+    watchdog = threading.Thread(
+        target=_daemon_watchdog,
+        daemon=True,
+        name="plan-tracker-watchdog",
+    )
+    watchdog.start()
+
     mcp.run()
 
 
