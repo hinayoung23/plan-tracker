@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "plan-tracker"
-version = "1.3.0"
+version = "1.4.0"
 description = "MCP Server for long-term plan tracking with milestone management, daily reminders, and standalone daemon"
 readme = "README.md"
 license = { text = "MIT" }
@@ -43,7 +43,10 @@ packages = ["plan_tracker"]
 include = [
     "plan_tracker/**",
     "skill/**",
+    "scripts/**",
     "data/.gitkeep",
     "README.md",
     "LICENSE",
+    "openclaw.plugin.json",
+    "package.json",
 ]

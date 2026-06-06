@@ -31,6 +31,18 @@
 
 ### 安装
 
+#### 方式一：OpenClaw 插件市场（推荐）
+
+```bash
+# 从 Git 仓库直接安装
+openclaw plugins install https://github.com/hinayoung23/plan-tracker.git
+
+# 安装 Python 依赖 + 初始化配置
+bash ~/.openclaw/plugins/cache/plan-tracker/scripts/setup.sh
+```
+
+#### 方式二：PyPI / pip
+
 ```bash
 # 从 GitHub Releases 安装
 pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.3.0/plan_tracker-1.3.0-py3-none-any.whl
@@ -246,6 +258,18 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 - MCP >= 1.0.0
 
 ### Installation
+
+#### Option 1: OpenClaw Plugin Marketplace (recommended)
+
+```bash
+# Install directly from Git repository
+openclaw plugins install https://github.com/hinayoung23/plan-tracker.git
+
+# Install Python dependencies + initial setup
+bash ~/.openclaw/plugins/cache/plan-tracker/scripts/setup.sh
+```
+
+#### Option 2: PyPI / pip
 
 ```bash
 # From GitHub Releases
