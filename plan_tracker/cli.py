@@ -265,6 +265,130 @@ def cmd_cron_setup(
     print(f"  launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist")
 
 
+def _detect_plan_tracker_path() -> str:
+    """Return the directory where plan_tracker is installed (for PYTHONPATH)."""
+    this_dir = Path(__file__).resolve().parent  # plan_tracker/
+    # If installed in editable mode, the parent is the project root
+    parent = this_dir.parent
+    if (parent / "pyproject.toml").exists():
+        return str(parent)
+    # Otherwise, find it via the package location
+    return str(this_dir.parent)
+
+
+def _openclaw_config_path() -> Path | None:
+    """Return the path to openclaw.json if OpenClaw is installed."""
+    candidate = Path.home() / ".openclaw" / "openclaw.json"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def _add_mcp_server_to_config(config_path: Path, dry_run: bool = False) -> bool:
+    """Add plan-tracker MCP server to an OpenClaw config file.
+
+    Returns True if the config was changed, False if it was already present.
+    """
+    try:
+        with open(config_path, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"Error: cannot read {config_path}: {exc}", file=sys.stderr)
+        return False
+
+    mcp = cfg.setdefault("mcp", {})
+    servers = mcp.setdefault("servers", {})
+
+    if "plan-tracker" in servers:
+        print("MCP server 'plan-tracker' already configured — skipping.")
+        return False
+
+    python = sys.executable
+    pkg_path = _detect_plan_tracker_path()
+
+    servers["plan-tracker"] = {
+        "command": python,
+        "args": ["-m", "plan_tracker.server"],
+        "env": {"PYTHONPATH": pkg_path},
+    }
+
+    if dry_run:
+        print(f"\nWould add to {config_path}:")
+        print(json.dumps({"mcp": {"servers": {"plan-tracker": servers["plan-tracker"]}}},
+                         ensure_ascii=False, indent=2))
+        return True
+
+    # Atomic write
+    tmp_path = config_path.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    tmp_path.replace(config_path)
+    print(f"✓ Added plan-tracker MCP server to {config_path}")
+    return True
+
+
+def cmd_setup(
+    qq_id: str = "",
+    interval_minutes: int = 5,
+    dry_run: bool = False,
+) -> None:
+    """One-command setup: MCP config + cron job + daemon.
+
+    Detects your environment and performs all post-install steps:
+    1. Adds plan-tracker to OpenClaw's MCP server list
+    2. Installs the cron job for QQ notification polling
+    3. Starts the daemon
+    """
+    print("plan-tracker setup")
+    print("=" * 40)
+
+    # ── Step 1: MCP server config ──────────────────────────────────
+    config_path = _openclaw_config_path()
+    if config_path:
+        print(f"\n[1/3] Configuring MCP server in {config_path}...")
+        _add_mcp_server_to_config(config_path, dry_run=dry_run)
+    else:
+        print("\n[1/3] OpenClaw config not found at ~/.openclaw/openclaw.json")
+        print("       Skipping MCP server registration.")
+        print(f"       To configure manually, add to your MCP config:")
+        print(f"         command: {sys.executable}")
+        print(f"         args: ['-m', 'plan_tracker.server']")
+
+    # ── Step 2: Cron job ───────────────────────────────────────────
+    print(f"\n[2/3] Installing cron job...")
+    if qq_id:
+        cmd_cron_setup(
+            qq_id=qq_id,
+            interval_minutes=interval_minutes,
+            dry_run=dry_run,
+        )
+    else:
+        print("       No --qq-id provided — skipping cron job.")
+        print("       Run later: python -m plan_tracker.cli cron-setup --qq-id <your-id>")
+
+    # ── Step 3: Daemon ─────────────────────────────────────────────
+    print(f"\n[3/3] Ensuring daemon is running...")
+    if dry_run:
+        print("       (dry-run — skipping daemon start)")
+    elif is_running():
+        print(f"       Daemon already running (PID: {read_pid()})")
+    else:
+        cmd_daemon_start()
+
+    # ── Summary ────────────────────────────────────────────────────
+    print(f"\n{'─' * 40}")
+    print("Setup complete!")
+    if config_path:
+        print(f"  • MCP server registered in {config_path}")
+    if qq_id:
+        print(f"  • Cron job installed (every {interval_minutes} min → QQ)")
+    print(f"  • Daemon: {'running' if is_running() else 'pending (will auto-start on first MCP call)'}")
+    print(f"\n  Restart OpenClaw to apply all changes:")
+    print(f"    launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist")
+    print(f"    launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plan Tracker CLI")
     sub = parser.add_subparsers(dest="command", help="Commands")
@@ -281,6 +405,24 @@ def main() -> None:
     # ack
     ack_parser = sub.add_parser("ack", help="Mark notifications as delivered")
     ack_parser.add_argument("ids", nargs="+", help="Notification IDs to ack")
+
+    # setup (one-command install)
+    setup_parser = sub.add_parser(
+        "setup",
+        help="One-command setup: MCP config + cron job + daemon",
+    )
+    setup_parser.add_argument(
+        "--qq-id",
+        help="QQ ID (hex string) for QQBot notification delivery",
+    )
+    setup_parser.add_argument(
+        "--interval", type=int, default=5,
+        help="Cron polling interval in minutes (default: 5)",
+    )
+    setup_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview all changes without writing anything",
+    )
 
     # cron-setup
     cron_parser = sub.add_parser(
@@ -306,7 +448,13 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "daemon":
+    if args.command == "setup":
+        cmd_setup(
+            qq_id=getattr(args, "qq_id", "") or "",
+            interval_minutes=args.interval,
+            dry_run=args.dry_run,
+        )
+    elif args.command == "daemon":
         if args.action == "start":
             cmd_daemon_start()
         elif args.action == "stop":

@@ -33,7 +33,7 @@
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.1.0/plan_tracker-1.1.0-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.3.0/plan_tracker-1.3.0-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
@@ -41,33 +41,35 @@ cd plan-tracker
 pip install -e .
 ```
 
-### 配置到 Claude Code / OpenClaw
+### 初始化配置
 
-在 `openclaw.json` 或 Claude Code 的 MCP 配置中添加：
+安装后运行一条命令完成所有配置（MCP 注册 + 定时通知 + 守护进程）：
 
-```json
-{
-  "mcpServers": {
-    "plan-tracker": {
-      "command": "python3",
-      "args": ["-m", "plan_tracker.server"]
-    }
-  }
-}
+```bash
+# 完整安装（含 QQ 通知）
+plan-tracker-setup setup --qq-id "你的QQ十六进制ID"
+
+# 或使用模块方式
+python -m plan_tracker.cli setup --qq-id "你的QQ号"
+
+# 试运行：预览所有改动但不写入
+python -m plan_tracker.cli setup --qq-id "你的QQ号" --dry-run
 ```
 
-如果是从源码安装且使用虚拟环境，路径示例：
+> **QQ ID 获取方式**：在 QQ Bot 与你的私聊消息中，OpenClaw 日志会显示目标十六进制 ID。
 
-```json
-{
-  "mcpServers": {
-    "plan-tracker": {
-      "command": "/path/to/plan-tracker/.venv/bin/python3",
-      "args": ["-m", "plan_tracker.server"]
-    }
-  }
-}
+`setup` 命令自动完成：
+1. ✅ 在 `~/.openclaw/openclaw.json` 中注册 MCP Server（自动检测 Python 路径）
+2. ✅ 安装 OpenClaw cron 定时任务（自动生成正确时间戳，无需手写）
+3. ✅ 启动守护进程
+
+安装后重启 OpenClaw 生效：
+```bash
+launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 ```
+
+如果需要手动配置（不使用 setup），参考下面的部署章节。
 
 ### 可用工具
 
@@ -262,7 +264,7 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 
 ```bash
 # From GitHub Releases
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.1.0/plan_tracker-1.1.0-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.3.0/plan_tracker-1.3.0-py3-none-any.whl
 
 # Or from source
 git clone https://github.com/hinayoung23/plan-tracker.git
@@ -270,31 +272,35 @@ cd plan-tracker
 pip install -e .
 ```
 
-### Deployment
+### Setup
 
-The reminder engine runs as a standalone daemon with **auto-start** — no manual process management needed.
-
-#### Auto-start via MCP Server (recommended)
-
-When an AI assistant first calls a plan-tracker MCP tool, `server.py` automatically checks and starts the daemon, plus launches a watchdog thread that revives it every 5 minutes if it dies.
+One command handles everything — MCP registration, cron job, and daemon:
 
 ```bash
-# No manual action needed — MCP Server handles it on first use
+# Full setup with QQ notifications
+plan-tracker-setup setup --qq-id "your-qq-hex-id"
+
+# Or using the module
+python -m plan_tracker.cli setup --qq-id "your-qq-id"
+
+# Preview changes without writing
+python -m plan_tracker.cli setup --qq-id "your-qq-id" --dry-run
 ```
 
-#### Self-healing via CLI polling
+> **Finding your QQ ID**: in a private chat with your QQ Bot, OpenClaw logs will show the target hex ID.
 
-The `notifications --ack` command auto-starts the daemon before fetching, so any periodic polling task also keeps the daemon alive.
+The `setup` command automates:
+1. ✅ Registers the MCP server in `~/.openclaw/openclaw.json` (auto-detects Python path)
+2. ✅ Installs the OpenClaw cron job (auto-generates timestamps — no manual editing)
+3. ✅ Starts the daemon
 
+Restart OpenClaw afterwards:
 ```bash
-# Fetch notifications (auto-starts daemon + marks delivered)
-python -m plan_tracker.cli notifications --ack
-
-# Manual daemon management (normally not needed)
-plan-tracker-cli daemon start
-python -m plan_tracker.cli daemon status
-python -m plan_tracker.cli daemon stop
+launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 ```
+
+For manual configuration (without `setup`), see the [manual deployment](#manual-deployment) section below.
 
 #### OpenClaw / QQBot integration
 
