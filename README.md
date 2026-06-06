@@ -34,10 +34,10 @@
 #### 方式一：OpenClaw 插件市场（推荐）
 
 ```bash
-# 从本地路径安装（已克隆的仓库）
-openclaw plugins install ./plan-tracker
+# 一键安装
+openclaw plugins install clawhub:plan-tracker
 
-# 安装 Python 依赖 + 初始化配置
+# 初始化配置（Python 依赖 + MCP 注册 + launchd + daemon）
 bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 ```
 
