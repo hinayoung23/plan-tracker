@@ -44,6 +44,7 @@ include = [
     "plan_tracker/**",
     "skill/**",
     "scripts/**",
+    "src/**",
     "data/.gitkeep",
     "README.md",
     "LICENSE",

@@ -34,11 +34,11 @@
 #### 方式一：OpenClaw 插件市场（推荐）
 
 ```bash
-# 从 Git 仓库直接安装
-openclaw plugins install https://github.com/hinayoung23/plan-tracker.git
+# 从本地路径安装（已克隆的仓库）
+openclaw plugins install ./plan-tracker
 
 # 安装 Python 依赖 + 初始化配置
-bash ~/.openclaw/plugins/cache/plan-tracker/scripts/setup.sh
+bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 ```
 
 #### 方式二：PyPI / pip
@@ -262,11 +262,11 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 #### Option 1: OpenClaw Plugin Marketplace (recommended)
 
 ```bash
-# Install directly from Git repository
-openclaw plugins install https://github.com/hinayoung23/plan-tracker.git
+# Install from local path (cloned repository)
+openclaw plugins install ./plan-tracker
 
 # Install Python dependencies + initial setup
-bash ~/.openclaw/plugins/cache/plan-tracker/scripts/setup.sh
+bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 ```
 
 #### Option 2: PyPI / pip
