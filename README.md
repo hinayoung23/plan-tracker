@@ -163,35 +163,25 @@ python -m plan_tracker.cli daemon stop
 
 #### 集成到 OpenClaw / QQBot
 
-在 OpenClaw 的 cron 配置（`~/.openclaw/cron/jobs.json`）中添加定时轮询任务，每 5 分钟拉取通知并通过 QQBot 推送。
+使用 `cron-setup` 命令一键安装 OpenClaw 定时轮询任务，自动生成正确的时间戳并写入配置：
 
-> **注意**：`createdAtMs` 必须是当前时间的毫秒时间戳，OpenClaw 用它计算首次执行时间。时间戳错误会导致任务永远不会触发。建议用以下命令获取：
-> ```bash
-> python3 -c "import time; print(int(time.time()*1000))"
-> ```
+```bash
+# 一键安装（替换为你的 QQ ID）
+python -m plan_tracker.cli cron-setup --qq-id "你的QQ号十六进制"
 
-```json
-{
-  "id": "plan-tracker-notification-check",
-  "name": "plan-tracker Notification Check",
-  "enabled": true,
-  "createdAtMs": <用上面的命令生成>,
-  "schedule": { "kind": "every", "everyMs": 300000 },
-  "sessionTarget": "isolated",
-  "wakeMode": "now",
-  "payload": {
-    "kind": "agentTurn",
-    "message": "exec python -m plan_tracker.cli notifications --ack。如果输出为空则回复NO_REPLY，否则原样发送给用户。",
-    "lightContext": true,
-    "timeoutSeconds": 30
-  },
-  "delivery": {
-    "mode": "announce",
-    "channel": "qqbot",
-    "to": "qqbot:c2c:<你的QQ号>",
-    "accountId": "default"
-  }
-}
+# 试运行：只打印 JSON 不写入
+python -m plan_tracker.cli cron-setup --qq-id "你的QQ号" --dry-run
+
+# 自定义轮询间隔（分钟）
+python -m plan_tracker.cli cron-setup --qq-id "你的QQ号" --interval 10
+```
+
+> **QQ ID 获取方式**：在 QQ Bot 与你的私聊消息中，OpenClaw 日志会显示发送目标的十六进制 ID（如 `82B0F3FE4CA79ED6FAEE3A6BC65F25AB`）。
+
+安装后重启 OpenClaw 生效：
+```bash
+launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 ```
 
 守护进程将提醒通知写入 `data/notification_queue.json`，cron 任务定时拉取并投递。`--ack` 参数确保每条通知只投递一次。
@@ -308,35 +298,25 @@ python -m plan_tracker.cli daemon stop
 
 #### OpenClaw / QQBot integration
 
-Add a cron job to OpenClaw (`~/.openclaw/cron/jobs.json`) that polls every 5 minutes:
+Use the `cron-setup` command to install the cron job with a single command — timestamps are always correct because they're generated automatically:
 
-> **Important**: `createdAtMs` must be the current time in milliseconds — OpenClaw uses it to calculate the first run time. A wrong timestamp will prevent the job from ever firing. Generate it with:
-> ```bash
-> python3 -c "import time; print(int(time.time()*1000))"
-> ```
+```bash
+# One-shot install (replace with your QQ ID)
+python -m plan_tracker.cli cron-setup --qq-id "your-qq-hex-id"
 
-```json
-{
-  "id": "plan-tracker-notification-check",
-  "name": "plan-tracker Notification Check",
-  "enabled": true,
-  "createdAtMs": <generate with the command above>,
-  "schedule": { "kind": "every", "everyMs": 300000 },
-  "sessionTarget": "isolated",
-  "wakeMode": "now",
-  "payload": {
-    "kind": "agentTurn",
-    "message": "exec python -m plan_tracker.cli notifications --ack. If output is empty reply NO_REPLY, otherwise forward to user.",
-    "lightContext": true,
-    "timeoutSeconds": 30
-  },
-  "delivery": {
-    "mode": "announce",
-    "channel": "qqbot",
-    "to": "qqbot:c2c:<your-qq-id>",
-    "accountId": "default"
-  }
-}
+# Dry-run: print the JSON without writing
+python -m plan_tracker.cli cron-setup --qq-id "your-qq-id" --dry-run
+
+# Custom polling interval (minutes)
+python -m plan_tracker.cli cron-setup --qq-id "your-qq-id" --interval 10
+```
+
+> **Finding your QQ ID**: in a private chat with your QQ Bot, OpenClaw logs will show the target hex ID (e.g. `82B0F3FE4CA79ED6FAEE3A6BC65F25AB`).
+
+Restart OpenClaw afterwards:
+```bash
+launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 ```
 
 The daemon writes notifications to `data/notification_queue.json`. The cron job polls and delivers them. The `--ack` flag ensures each notification is delivered exactly once.
