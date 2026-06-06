@@ -22,7 +22,7 @@
 - **定时提醒** — 守护进程每 5 分钟轮询，检测过期/即将到期/停滞的里程碑
 - **每日提醒** — 早晚两次提醒：早晨进度提醒（默认 08:30）+ 晚间完成确认（默认 21:30），支持 10 分钟超时自动判定
 - **自动拉起** — MCP Server 启动时自动检查并拉起守护进程，附带 watchdog 线程守护存活
-- **多通道通知** — 支持 MCP 通道和邮件通知；通过 OpenClaw cron 定时轮询 + QQBot 推送到 QQ
+- **通知投递** — 通过 CLI 拉取通知队列，配合任意定时任务即可投递到消息平台
 
 ### 环境要求
 
@@ -160,30 +160,17 @@ python -m plan_tracker.cli daemon status
 python -m plan_tracker.cli daemon stop
 ```
 
-#### 集成到 OpenClaw / QQBot
+#### 通知投递
 
-使用 `cron-setup` 命令一键安装 OpenClaw 定时轮询任务，自动生成正确的时间戳并写入配置：
+守护进程将提醒写入 `data/notification_queue.json`。外部系统通过 CLI 拉取并投递给用户：
 
 ```bash
-# 一键安装（替换为你的 QQ ID）
-python -m plan_tracker.cli cron-setup --qq-id "你的QQ号十六进制"
-
-# 试运行：只打印 JSON 不写入
-python -m plan_tracker.cli cron-setup --qq-id "你的QQ号" --dry-run
-
-# 自定义轮询间隔（分钟）
-python -m plan_tracker.cli cron-setup --qq-id "你的QQ号" --interval 10
+python -m plan_tracker.cli notifications --ack
 ```
 
-> **QQ ID 获取方式**：在 QQ Bot 与你的私聊消息中，OpenClaw 日志会显示发送目标的十六进制 ID（如 `82B0F3FE4CA79ED6FAEE3A6BC65F25AB`）。
+`--ack` 确保每条通知只投递一次。将此命令配置到定时任务（如 cron）中即可实现自动通知投递。
 
-安装后重启 OpenClaw 生效：
-```bash
-launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
-launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
-```
-
-守护进程将提醒通知写入 `data/notification_queue.json`，cron 任务定时拉取并投递。`--ack` 参数确保每条通知只投递一次。
+> 如果你使用 OpenClaw，可以用 `python -m plan_tracker.cli cron-setup --qq-id <id>` 自动生成定时任务配置。具体参数由你的 agent 平台决定，不属于 plan-tracker 自身的配置。
 
 ### 提醒机制
 
@@ -250,7 +237,7 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 - **Daily Reminders** — Morning check-in (default 08:30) + evening review (default 21:30) with 10-min auto-timeout
 - **Milestone Reminders** — Daemon polls every 5 minutes for overdue, upcoming, and stale milestones
 - **Auto-start Daemon** — MCP Server auto-starts the daemon on first use with a watchdog thread; CLI `--ack` also self-heals
-- **Multi-channel** — MCP channel + email; OpenClaw cron + QQBot integration for push notifications
+- **Notification delivery** — CLI-based queue polling; pair with any scheduler to forward to your messaging platform
 
 ### Requirements
 
@@ -296,44 +283,17 @@ launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 ```
 
-#### OpenClaw / QQBot integration
+#### Notification delivery
 
-Use the `cron-setup` command to install the cron job with a single command — timestamps are always correct because they're generated automatically:
+The daemon writes notifications to `data/notification_queue.json`. External systems poll them via:
 
 ```bash
-# One-shot install (replace with your QQ ID)
-python -m plan_tracker.cli cron-setup --qq-id "your-qq-hex-id"
-
-# Dry-run: print the JSON without writing
-python -m plan_tracker.cli cron-setup --qq-id "your-qq-id" --dry-run
-
-# Custom polling interval (minutes)
-python -m plan_tracker.cli cron-setup --qq-id "your-qq-id" --interval 10
+python -m plan_tracker.cli notifications --ack
 ```
 
-> **Finding your QQ ID**: in a private chat with your QQ Bot, OpenClaw logs will show the target hex ID (e.g. `82B0F3FE4CA79ED6FAEE3A6BC65F25AB`).
+The `--ack` flag ensures each notification is delivered exactly once. Set up a periodic task (e.g. cron) to run this command and forward output to the user.
 
-Restart OpenClaw afterwards:
-```bash
-launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
-launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
-```
-
-The daemon writes notifications to `data/notification_queue.json`. The cron job polls and delivers them. The `--ack` flag ensures each notification is delivered exactly once.
-
-### MCP Configuration
-
-Add to your `openclaw.json` or Claude Code MCP config:
-
-```json
-{
-  "mcpServers": {
-    "plan-tracker": {
-      "command": "python3",
-      "args": ["-m", "plan_tracker.server"]
-    }
-  }
-}
+> If you use OpenClaw, `python -m plan_tracker.cli cron-setup --qq-id <id>` generates a ready-to-use cron job config. The specific delivery parameters depend on your agent platform and are not part of plan-tracker's own configuration.
 ```
 
 ### License
