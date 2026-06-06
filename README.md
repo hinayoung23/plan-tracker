@@ -55,7 +55,8 @@ python -m plan_tracker.cli setup --dry-run
 
 `setup` 自动完成：
 1. ✅ 在 `~/.openclaw/openclaw.json` 中注册 MCP Server（自动检测 Python 路径）
-2. ✅ 启动守护进程
+2. ✅ 安装 launchd plist（Mac 重启后自动拉起 daemon）
+3. ✅ 启动守护进程
 
 > QQ 通知由 OpenClaw 的 cron 机制负责投递，不属于 plan-tracker 自身的配置。安装 cron 轮询任务请使用：
 > ```bash
@@ -270,7 +271,8 @@ python -m plan_tracker.cli setup --dry-run
 
 `setup` automates:
 1. ✅ Registers the MCP server in `~/.openclaw/openclaw.json` (auto-detects Python path)
-2. ✅ Starts the daemon
+2. ✅ Installs a launchd plist (auto-restarts daemon after Mac reboots)
+3. ✅ Starts the daemon
 
 > QQ notification delivery is handled by OpenClaw's cron system, not by plan-tracker itself. To install the polling cron job:
 > ```bash

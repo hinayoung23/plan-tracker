@@ -26,6 +26,82 @@ _DEFAULT_CRON_INTERVAL_MS = 300000  # 5 minutes
 _DEFAULT_OPENCLAW_CRON_DIR = Path.home() / ".openclaw" / "cron"
 _DEFAULT_CRON_FILE = _DEFAULT_OPENCLAW_CRON_DIR / "jobs.json"
 
+# launchd plist
+_LAUNCHD_LABEL = "com.plan-tracker.daemon"
+_LAUNCHD_PLIST_DIR = Path.home() / "Library" / "LaunchAgents"
+_LAUNCHD_PLIST_PATH = _LAUNCHD_PLIST_DIR / f"{_LAUNCHD_LABEL}.plist"
+
+_LAUNCHD_PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>Comment</key>
+    <string>Plan Tracker reminder daemon — keeps plans checked and notifications flowing</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ExitTimeOut</key>
+    <integer>5</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python}</string>
+        <string>-m</string>
+        <string>plan_tracker.daemon</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>{pkg_path}</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>{data_dir}</string>
+    <key>StandardOutPath</key>
+    <string>{log_dir}/daemon-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{log_dir}/daemon-stderr.log</string>
+</dict>
+</plist>"""
+
+
+def _install_launchd_plist(dry_run: bool = False) -> bool:
+    """Install the launchd plist for the daemon.
+
+    Returns True if installed/updated, False if already present and unchanged.
+    """
+    plist_content = _LAUNCHD_PLIST_TEMPLATE.format(
+        label=_LAUNCHD_LABEL,
+        python=sys.executable,
+        pkg_path=_detect_plan_tracker_path(),
+        data_dir=str(PID_FILE.parent),
+        log_dir=str(PID_FILE.parent),
+    )
+
+    if _LAUNCHD_PLIST_PATH.exists():
+        current = _LAUNCHD_PLIST_PATH.read_text()
+        if current.strip() == plist_content.strip():
+            print("launchd plist already installed and up-to-date — skipping.")
+            return False
+
+    if dry_run:
+        print(f"\nWould write launchd plist to {_LAUNCHD_PLIST_PATH}:")
+        print(plist_content)
+        return True
+
+    _LAUNCHD_PLIST_DIR.mkdir(parents=True, exist_ok=True)
+    _LAUNCHD_PLIST_PATH.write_text(plist_content)
+
+    # Load it (unload first in case of update)
+    os.system(f"launchctl unload {_LAUNCHD_PLIST_PATH} 2>/dev/null")
+    os.system(f"launchctl load {_LAUNCHD_PLIST_PATH}")
+    print(f"✓ launchd plist installed and loaded: {_LAUNCHD_PLIST_PATH}")
+    return True
+
 
 def cmd_daemon_start() -> None:
     """Start the daemon in background."""
@@ -329,11 +405,12 @@ def _add_mcp_server_to_config(config_path: Path, dry_run: bool = False) -> bool:
 
 
 def cmd_setup(dry_run: bool = False) -> None:
-    """One-command setup: MCP config + daemon.
+    """One-command setup: MCP config + launchd + daemon.
 
     Handles plan-tracker's own configuration:
     1. Registers the MCP server in OpenClaw's config file
-    2. Starts the daemon
+    2. Installs the launchd plist (survives Mac reboots)
+    3. Starts the daemon
 
     For QQ notification delivery, use the separate ``cron-setup`` command.
     """
@@ -343,17 +420,21 @@ def cmd_setup(dry_run: bool = False) -> None:
     # ── Step 1: MCP server config ──────────────────────────────────
     config_path = _openclaw_config_path()
     if config_path:
-        print(f"\n[1/2] Configuring MCP server in {config_path}...")
+        print(f"\n[1/3] Configuring MCP server in {config_path}...")
         _add_mcp_server_to_config(config_path, dry_run=dry_run)
     else:
-        print("\n[1/2] OpenClaw config not found at ~/.openclaw/openclaw.json")
+        print("\n[1/3] OpenClaw config not found at ~/.openclaw/openclaw.json")
         print("       Skipping MCP server registration.")
         print(f"       To configure manually, add to your MCP config:")
         print(f"         command: {sys.executable}")
         print(f"         args: ['-m', 'plan_tracker.server']")
 
-    # ── Step 2: Daemon ─────────────────────────────────────────────
-    print(f"\n[2/2] Ensuring daemon is running...")
+    # ── Step 2: launchd persistence ─────────────────────────────────
+    print(f"\n[2/3] Installing launchd plist (survives reboots)...")
+    _install_launchd_plist(dry_run=dry_run)
+
+    # ── Step 3: Daemon ─────────────────────────────────────────────
+    print(f"\n[3/3] Ensuring daemon is running...")
     if dry_run:
         print("       (dry-run — skipping daemon start)")
     elif is_running():
@@ -366,6 +447,7 @@ def cmd_setup(dry_run: bool = False) -> None:
     print("Setup complete!")
     if config_path:
         print(f"  • MCP server registered in {config_path}")
+    print(f"  • launchd: {_LAUNCHD_PLIST_PATH}")
     print(f"  • Daemon: {'running' if is_running() else 'pending (will auto-start on first MCP call)'}")
     print(f"\n  Next step — install the QQ notification cron job:")
     print(f"    python -m plan_tracker.cli cron-setup --qq-id <your-qq-hex-id>")
@@ -380,7 +462,7 @@ def main() -> None:
 
     # daemon subcommands
     daemon_parser = sub.add_parser("daemon", help="Daemon management")
-    daemon_parser.add_argument("action", choices=["start", "stop", "status"])
+    daemon_parser.add_argument("action", choices=["start", "stop", "status", "install", "uninstall"])
 
     # notifications
     notif_parser = sub.add_parser("notifications", help="Show pending notifications")
@@ -434,6 +516,15 @@ def main() -> None:
             cmd_daemon_stop()
         elif args.action == "status":
             cmd_daemon_status()
+        elif args.action == "install":
+            _install_launchd_plist()
+        elif args.action == "uninstall":
+            if _LAUNCHD_PLIST_PATH.exists():
+                os.system(f"launchctl unload {_LAUNCHD_PLIST_PATH} 2>/dev/null")
+                _LAUNCHD_PLIST_PATH.unlink()
+                print(f"✓ launchd plist removed: {_LAUNCHD_PLIST_PATH}")
+            else:
+                print("launchd plist not installed.")
     elif args.command == "notifications":
         cmd_notifications(json_output=args.json, ack=args.ack)
     elif args.command == "ack":
