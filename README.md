@@ -163,13 +163,19 @@ python -m plan_tracker.cli daemon stop
 
 #### 集成到 OpenClaw / QQBot
 
-在 OpenClaw 的 cron 配置（`~/.openclaw/cron/jobs.json`）中添加定时轮询任务，每 5 分钟拉取通知并通过 QQBot 推送：
+在 OpenClaw 的 cron 配置（`~/.openclaw/cron/jobs.json`）中添加定时轮询任务，每 5 分钟拉取通知并通过 QQBot 推送。
+
+> **注意**：`createdAtMs` 必须是当前时间的毫秒时间戳，OpenClaw 用它计算首次执行时间。时间戳错误会导致任务永远不会触发。建议用以下命令获取：
+> ```bash
+> python3 -c "import time; print(int(time.time()*1000))"
+> ```
 
 ```json
 {
   "id": "plan-tracker-notification-check",
   "name": "plan-tracker Notification Check",
   "enabled": true,
+  "createdAtMs": <用上面的命令生成>,
   "schedule": { "kind": "every", "everyMs": 300000 },
   "sessionTarget": "isolated",
   "wakeMode": "now",
@@ -304,11 +310,17 @@ python -m plan_tracker.cli daemon stop
 
 Add a cron job to OpenClaw (`~/.openclaw/cron/jobs.json`) that polls every 5 minutes:
 
+> **Important**: `createdAtMs` must be the current time in milliseconds — OpenClaw uses it to calculate the first run time. A wrong timestamp will prevent the job from ever firing. Generate it with:
+> ```bash
+> python3 -c "import time; print(int(time.time()*1000))"
+> ```
+
 ```json
 {
   "id": "plan-tracker-notification-check",
   "name": "plan-tracker Notification Check",
   "enabled": true,
+  "createdAtMs": <generate with the command above>,
   "schedule": { "kind": "every", "everyMs": 300000 },
   "sessionTarget": "isolated",
   "wakeMode": "now",
