@@ -328,17 +328,14 @@ def _add_mcp_server_to_config(config_path: Path, dry_run: bool = False) -> bool:
     return True
 
 
-def cmd_setup(
-    qq_id: str = "",
-    interval_minutes: int = 5,
-    dry_run: bool = False,
-) -> None:
-    """One-command setup: MCP config + cron job + daemon.
+def cmd_setup(dry_run: bool = False) -> None:
+    """One-command setup: MCP config + daemon.
 
-    Detects your environment and performs all post-install steps:
-    1. Adds plan-tracker to OpenClaw's MCP server list
-    2. Installs the cron job for QQ notification polling
-    3. Starts the daemon
+    Handles plan-tracker's own configuration:
+    1. Registers the MCP server in OpenClaw's config file
+    2. Starts the daemon
+
+    For QQ notification delivery, use the separate ``cron-setup`` command.
     """
     print("plan-tracker setup")
     print("=" * 40)
@@ -346,29 +343,17 @@ def cmd_setup(
     # ── Step 1: MCP server config ──────────────────────────────────
     config_path = _openclaw_config_path()
     if config_path:
-        print(f"\n[1/3] Configuring MCP server in {config_path}...")
+        print(f"\n[1/2] Configuring MCP server in {config_path}...")
         _add_mcp_server_to_config(config_path, dry_run=dry_run)
     else:
-        print("\n[1/3] OpenClaw config not found at ~/.openclaw/openclaw.json")
+        print("\n[1/2] OpenClaw config not found at ~/.openclaw/openclaw.json")
         print("       Skipping MCP server registration.")
         print(f"       To configure manually, add to your MCP config:")
         print(f"         command: {sys.executable}")
         print(f"         args: ['-m', 'plan_tracker.server']")
 
-    # ── Step 2: Cron job ───────────────────────────────────────────
-    print(f"\n[2/3] Installing cron job...")
-    if qq_id:
-        cmd_cron_setup(
-            qq_id=qq_id,
-            interval_minutes=interval_minutes,
-            dry_run=dry_run,
-        )
-    else:
-        print("       No --qq-id provided — skipping cron job.")
-        print("       Run later: python -m plan_tracker.cli cron-setup --qq-id <your-id>")
-
-    # ── Step 3: Daemon ─────────────────────────────────────────────
-    print(f"\n[3/3] Ensuring daemon is running...")
+    # ── Step 2: Daemon ─────────────────────────────────────────────
+    print(f"\n[2/2] Ensuring daemon is running...")
     if dry_run:
         print("       (dry-run — skipping daemon start)")
     elif is_running():
@@ -381,10 +366,10 @@ def cmd_setup(
     print("Setup complete!")
     if config_path:
         print(f"  • MCP server registered in {config_path}")
-    if qq_id:
-        print(f"  • Cron job installed (every {interval_minutes} min → QQ)")
     print(f"  • Daemon: {'running' if is_running() else 'pending (will auto-start on first MCP call)'}")
-    print(f"\n  Restart OpenClaw to apply all changes:")
+    print(f"\n  Next step — install the QQ notification cron job:")
+    print(f"    python -m plan_tracker.cli cron-setup --qq-id <your-qq-hex-id>")
+    print(f"\n  Then restart OpenClaw:")
     print(f"    launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist")
     print(f"    launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist")
 
@@ -409,19 +394,11 @@ def main() -> None:
     # setup (one-command install)
     setup_parser = sub.add_parser(
         "setup",
-        help="One-command setup: MCP config + cron job + daemon",
-    )
-    setup_parser.add_argument(
-        "--qq-id",
-        help="QQ ID (hex string) for QQBot notification delivery",
-    )
-    setup_parser.add_argument(
-        "--interval", type=int, default=5,
-        help="Cron polling interval in minutes (default: 5)",
+        help="One-command setup: register MCP server + start daemon",
     )
     setup_parser.add_argument(
         "--dry-run", action="store_true",
-        help="Preview all changes without writing anything",
+        help="Preview changes without writing anything",
     )
 
     # cron-setup
@@ -449,11 +426,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "setup":
-        cmd_setup(
-            qq_id=getattr(args, "qq_id", "") or "",
-            interval_minutes=args.interval,
-            dry_run=args.dry_run,
-        )
+        cmd_setup(dry_run=args.dry_run)
     elif args.command == "daemon":
         if args.action == "start":
             cmd_daemon_start()

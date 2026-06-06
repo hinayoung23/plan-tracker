@@ -43,33 +43,30 @@ pip install -e .
 
 ### 初始化配置
 
-安装后运行一条命令完成所有配置（MCP 注册 + 定时通知 + 守护进程）：
+安装后运行 `setup` 完成 MCP 注册和守护进程启动：
 
 ```bash
-# 完整安装（含 QQ 通知）
-plan-tracker-setup setup --qq-id "你的QQ十六进制ID"
+# 一条命令完成配置
+python -m plan_tracker.cli setup
 
-# 或使用模块方式
-python -m plan_tracker.cli setup --qq-id "你的QQ号"
-
-# 试运行：预览所有改动但不写入
-python -m plan_tracker.cli setup --qq-id "你的QQ号" --dry-run
+# 试运行：预览改动但不写入
+python -m plan_tracker.cli setup --dry-run
 ```
 
-> **QQ ID 获取方式**：在 QQ Bot 与你的私聊消息中，OpenClaw 日志会显示目标十六进制 ID。
-
-`setup` 命令自动完成：
+`setup` 自动完成：
 1. ✅ 在 `~/.openclaw/openclaw.json` 中注册 MCP Server（自动检测 Python 路径）
-2. ✅ 安装 OpenClaw cron 定时任务（自动生成正确时间戳，无需手写）
-3. ✅ 启动守护进程
+2. ✅ 启动守护进程
+
+> QQ 通知由 OpenClaw 的 cron 机制负责投递，不属于 plan-tracker 自身的配置。安装 cron 轮询任务请使用：
+> ```bash
+> python -m plan_tracker.cli cron-setup --qq-id "你的QQ十六进制ID"
+> ```
 
 安装后重启 OpenClaw 生效：
 ```bash
 launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 ```
-
-如果需要手动配置（不使用 setup），参考下面的部署章节。
 
 ### 可用工具
 
@@ -274,33 +271,30 @@ pip install -e .
 
 ### Setup
 
-One command handles everything — MCP registration, cron job, and daemon:
+Run `setup` to register the MCP server and start the daemon:
 
 ```bash
-# Full setup with QQ notifications
-plan-tracker-setup setup --qq-id "your-qq-hex-id"
-
-# Or using the module
-python -m plan_tracker.cli setup --qq-id "your-qq-id"
+# One command to configure plan-tracker
+python -m plan_tracker.cli setup
 
 # Preview changes without writing
-python -m plan_tracker.cli setup --qq-id "your-qq-id" --dry-run
+python -m plan_tracker.cli setup --dry-run
 ```
 
-> **Finding your QQ ID**: in a private chat with your QQ Bot, OpenClaw logs will show the target hex ID.
-
-The `setup` command automates:
+`setup` automates:
 1. ✅ Registers the MCP server in `~/.openclaw/openclaw.json` (auto-detects Python path)
-2. ✅ Installs the OpenClaw cron job (auto-generates timestamps — no manual editing)
-3. ✅ Starts the daemon
+2. ✅ Starts the daemon
+
+> QQ notification delivery is handled by OpenClaw's cron system, not by plan-tracker itself. To install the polling cron job:
+> ```bash
+> python -m plan_tracker.cli cron-setup --qq-id "your-qq-hex-id"
+> ```
 
 Restart OpenClaw afterwards:
 ```bash
 launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 ```
-
-For manual configuration (without `setup`), see the [manual deployment](#manual-deployment) section below.
 
 #### OpenClaw / QQBot integration
 
