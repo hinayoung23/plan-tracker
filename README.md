@@ -70,10 +70,7 @@ python -m plan_tracker.cli setup --dry-run
 2. ✅ 安装 launchd plist（Mac 重启后自动拉起 daemon）
 3. ✅ 启动守护进程
 
-> QQ 通知由 OpenClaw 的 cron 机制负责投递，不属于 plan-tracker 自身的配置。安装 cron 轮询任务请使用：
-> ```bash
-> python -m plan_tracker.cli cron-setup --qq-id "你的QQ十六进制ID"
-> ```
+> 通知投递由 agent 平台负责。如果你使用 OpenClaw，可运行 `python -m plan_tracker.cli cron-setup --help` 查看定时任务配置选项。
 
 安装后重启 OpenClaw 生效：
 ```bash
@@ -183,7 +180,7 @@ python -m plan_tracker.cli notifications --ack
 
 `--ack` 确保每条通知只投递一次。将此命令配置到定时任务（如 cron）中即可实现自动通知投递。
 
-> 如果你使用 OpenClaw，可以用 `python -m plan_tracker.cli cron-setup --qq-id <id>` 自动生成定时任务配置。具体参数由你的 agent 平台决定，不属于 plan-tracker 自身的配置。
+> 如果你使用 OpenClaw，可用 `python -m plan_tracker.cli cron-setup` 生成定时轮询配置，具体参数由你的 agent 平台决定。
 
 ### 提醒机制
 
@@ -298,10 +295,7 @@ python -m plan_tracker.cli setup --dry-run
 2. ✅ Installs a launchd plist (auto-restarts daemon after Mac reboots)
 3. ✅ Starts the daemon
 
-> QQ notification delivery is handled by OpenClaw's cron system, not by plan-tracker itself. To install the polling cron job:
-> ```bash
-> python -m plan_tracker.cli cron-setup --qq-id "your-qq-hex-id"
-> ```
+> Notification delivery is handled by your agent platform. If you use OpenClaw, run `python -m plan_tracker.cli cron-setup --help` for scheduling options.
 
 Restart OpenClaw afterwards:
 ```bash
@@ -319,7 +313,7 @@ python -m plan_tracker.cli notifications --ack
 
 The `--ack` flag ensures each notification is delivered exactly once. Set up a periodic task (e.g. cron) to run this command and forward output to the user.
 
-> If you use OpenClaw, `python -m plan_tracker.cli cron-setup --qq-id <id>` generates a ready-to-use cron job config. The specific delivery parameters depend on your agent platform and are not part of plan-tracker's own configuration.
+> If you use OpenClaw, `python -m plan_tracker.cli cron-setup` generates a ready-to-use scheduling config. The specific delivery parameters depend on your agent platform.
 ```
 
 ### License

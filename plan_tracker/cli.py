@@ -412,7 +412,7 @@ def cmd_setup(dry_run: bool = False) -> None:
     2. Installs the launchd plist (survives Mac reboots)
     3. Starts the daemon
 
-    For QQ notification delivery, use the separate ``cron-setup`` command.
+    For agent-platform notification delivery, use ``cron-setup``.
     """
     print("plan-tracker setup")
     print("=" * 40)
@@ -449,8 +449,8 @@ def cmd_setup(dry_run: bool = False) -> None:
         print(f"  • MCP server registered in {config_path}")
     print(f"  • launchd: {_LAUNCHD_PLIST_PATH}")
     print(f"  • Daemon: {'running' if is_running() else 'pending (will auto-start on first MCP call)'}")
-    print(f"\n  Next step — install the QQ notification cron job:")
-    print(f"    python -m plan_tracker.cli cron-setup --qq-id <your-qq-hex-id>")
+    print(f"\n  Next step — set up notification polling (optional):")
+    print(f"    python -m plan_tracker.cli cron-setup --help")
     print(f"\n  Then restart OpenClaw:")
     print(f"    launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist")
     print(f"    launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist")
