@@ -117,7 +117,7 @@ def _compute_plan_status(plan: dict) -> str:
     past_due = any(
         m["status"] in ("in_progress", "pending")
         and m.get("target_date", "")
-        and m["target_date"] < datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        and m["target_date"] < datetime.now().strftime("%Y-%m-%d")
         for m in milestones
     )
 

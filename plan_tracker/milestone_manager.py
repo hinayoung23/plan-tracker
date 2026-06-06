@@ -98,7 +98,7 @@ def add_checkin(
     # Auto-transition status
     if progress_pct >= 100:
         milestone["status"] = "completed"
-        milestone["actual_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        milestone["actual_date"] = datetime.now().strftime("%Y-%m-%d")
     elif progress_pct > 0 and milestone["status"] == "pending":
         milestone["status"] = "in_progress"
 
@@ -133,8 +133,8 @@ def get_upcoming_milestones(plan_name: str, days_ahead: int = 7) -> list[dict]:
     if plan is None:
         raise ValueError(f"Plan '{plan_name}' not found")
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    today_dt = datetime.now(timezone.utc)
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_dt = datetime.now()
     result = []
 
     for m in plan.get("milestones", []):
@@ -144,7 +144,7 @@ def get_upcoming_milestones(plan_name: str, days_ahead: int = 7) -> list[dict]:
         if not target:
             continue
         try:
-            target_dt = datetime.fromisoformat(target).replace(tzinfo=timezone.utc)
+            target_dt = datetime.fromisoformat(target)
             diff = (target_dt - today_dt).days
         except (ValueError, TypeError):
             continue
@@ -180,7 +180,7 @@ def _is_checkin_stale(milestone: dict, max_days: int = 7) -> bool:
         return False
     last = checkins[-1]
     try:
-        last_dt = datetime.fromisoformat(last["date"]).replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - last_dt).days > max_days
+        last_dt = datetime.fromisoformat(last["date"]).replace(tzinfo=None)
+        return (datetime.now() - last_dt).days > max_days
     except (ValueError, KeyError):
         return False

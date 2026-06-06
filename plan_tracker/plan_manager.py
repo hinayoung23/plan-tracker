@@ -144,7 +144,7 @@ def get_plan_analysis(plan_name: str) -> dict:
         raise ValueError(f"Plan '{plan_name}' not found")
 
     milestones = plan.get("milestones", [])
-    now = datetime.now(timezone.utc)
+    now = datetime.now()  # local time for date comparisons
 
     total_est = sum(m.get("effort_hours_estimate", 0) for m in milestones)
     total_actual = sum(
@@ -178,8 +178,8 @@ def get_plan_analysis(plan_name: str) -> dict:
     days_elapsed = 0
     if target:
         try:
-            target_date = datetime.fromisoformat(target).replace(tzinfo=timezone.utc)
-            created = datetime.fromisoformat(plan["created_at"]).replace(tzinfo=timezone.utc)
+            target_date = datetime.fromisoformat(target)
+            created = datetime.fromisoformat(plan["created_at"])
             days_total = max((target_date - created).days, 1)
             days_remaining = max((target_date - now).days, 0)
             days_elapsed = min((now - created).days, days_total)
@@ -226,7 +226,7 @@ def _plan_status(plan: dict) -> str:
     if not any(m["status"] == "in_progress" for m in plan.get("milestones", [])):
         return "paused"
     # Check if any active milestone is past due
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
     for m in plan.get("milestones", []):
         if m["status"] in ("in_progress", "pending") and m.get("target_date", "") < today:
             return "behind"

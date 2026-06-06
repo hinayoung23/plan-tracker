@@ -37,6 +37,21 @@ NOTIFICATION_COOLDOWN_HOURS = 12
 STATE_FILE = DATA_DIR / ".reminder_state.json"
 
 
+def _local_now() -> datetime:
+    """Wall-clock time in the system's local timezone.
+
+    Used for all time-window comparisons (daily check-in, review,
+    weekday checks, etc.) so that configured times like 08:30 mean
+    08:30 in the user's timezone, not UTC.
+    """
+    return datetime.now()
+
+
+def _utc_now_iso() -> str:
+    """UTC timestamp string for persistent storage."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 class ReminderEngine:
 
     def __init__(self):
@@ -71,7 +86,7 @@ class ReminderEngine:
         if not index or not index.get("plans"):
             return
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = _local_now().strftime("%Y-%m-%d")
         notifications = []
 
         for entry in index["plans"]:
@@ -101,7 +116,7 @@ class ReminderEngine:
                 if target_dt is None:
                     continue
 
-                days_remaining = (target_dt - datetime.now(timezone.utc)).days
+                days_remaining = (target_dt - _local_now()).days
                 key = f"{entry['name']}:{m['id']}"
 
                 if days_remaining < 0:
@@ -173,7 +188,7 @@ class ReminderEngine:
         """
         reminders = plan.get("reminders", {})
         notifications = []
-        now = datetime.now(timezone.utc)
+        now = _local_now()
 
         # Morning daily check-in
         if reminders.get("daily_checkin_enabled", True):
@@ -242,7 +257,7 @@ def _get_active_milestone(plan: dict) -> dict | None:
 
 
 def _today_str() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return _local_now().strftime("%Y-%m-%d")
 
 
 def _save_state_after_timeout(plan_name: str, ntype: str) -> None:
@@ -434,14 +449,16 @@ def _build_weekly(entry, plan):
 # ── utils ──
 
 def _parse_date(date_str):
+    """Parse a YYYY-MM-DD date string into a naive local datetime at midnight."""
     try:
-        return datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(date_str)
     except (ValueError, TypeError):
         return None
 
 
 def _now_iso():
-    return datetime.now(timezone.utc).isoformat()
+    """UTC timestamp for persistent storage."""
+    return _utc_now_iso()
 
 
 def _is_stale(m):
@@ -449,8 +466,8 @@ def _is_stale(m):
     if not checkins:
         return False
     try:
-        last_dt = datetime.fromisoformat(checkins[-1]["date"]).replace(tzinfo=timezone.utc)
-        return (datetime.now(timezone.utc) - last_dt).days > 7
+        last_dt = datetime.fromisoformat(checkins[-1]["date"])
+        return (_local_now() - last_dt).days > 7
     except (ValueError, KeyError):
         return False
 
@@ -463,7 +480,7 @@ def _is_today(day_name):
     expected = days_map.get(day_name.lower())
     if expected is None:
         return False
-    return datetime.now(timezone.utc).weekday() == expected
+    return _local_now().weekday() == expected
 
 
 def _should_notify(state, key, ntype):
@@ -473,8 +490,8 @@ def _should_notify(state, key, ntype):
     if last.get("type") != ntype:
         return True
     try:
-        last_dt = datetime.fromisoformat(last["time"]).replace(tzinfo=timezone.utc)
-        hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+        last_dt = datetime.fromisoformat(last["time"])
+        hours = (_local_now() - last_dt).total_seconds() / 3600
         return hours >= NOTIFICATION_COOLDOWN_HOURS
     except (ValueError, KeyError, TypeError):
         return True

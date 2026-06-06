@@ -42,7 +42,12 @@ def _save_state(state: dict) -> None:
 
 
 def _today_str() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """Today's date in local time — used to key daily state entries.
+
+    Using local time ensures that morning/evening reminders align with
+    the user's actual day/night cycle rather than UTC.
+    """
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 def get_today_state(plan_name: str) -> dict:
@@ -110,8 +115,8 @@ def record_confirmation(
     date_str = target_date or _today_str()
     state = _load_state()
     entry = state.setdefault(plan_name, {}).setdefault(date_str, {})
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
+    now_utc = datetime.now(timezone.utc)
+    now_iso = now_utc.isoformat()
 
     # Check if this is a late confirmation (after timeout)
     review_reminded_at = entry.get("review_reminded_at")
@@ -123,14 +128,14 @@ def record_confirmation(
             reminded_dt = datetime.fromisoformat(review_reminded_at).replace(
                 tzinfo=timezone.utc
             )
-            elapsed_minutes = (now - reminded_dt).total_seconds() / 60
+            elapsed_minutes = (now_utc - reminded_dt).total_seconds() / 60
             # If more than 10 minutes passed since evening reminder, archive to next day
             # We read timeout from plan config later, use a reasonable default here
             if elapsed_minutes > 10:
                 is_archived = True
-                # Archive to the next day
+                # Archive to the next LOCAL day (not UTC)
                 from datetime import timedelta
-                next_day = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+                next_day = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
                 archive_target_date = next_day
 
                 # Store the archived confirmation on the next day's entry
