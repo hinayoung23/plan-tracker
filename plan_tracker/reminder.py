@@ -466,7 +466,8 @@ def _is_stale(m):
     if not checkins:
         return False
     try:
-        last_dt = datetime.fromisoformat(checkins[-1]["date"])
+        # Stored ISO strings are UTC-aware; strip tzinfo for naive comparison
+        last_dt = datetime.fromisoformat(checkins[-1]["date"]).replace(tzinfo=None)
         return (_local_now() - last_dt).days > 7
     except (ValueError, KeyError):
         return False
@@ -490,7 +491,7 @@ def _should_notify(state, key, ntype):
     if last.get("type") != ntype:
         return True
     try:
-        last_dt = datetime.fromisoformat(last["time"])
+        last_dt = datetime.fromisoformat(last["time"]).replace(tzinfo=None)
         hours = (_local_now() - last_dt).total_seconds() / 3600
         return hours >= NOTIFICATION_COOLDOWN_HOURS
     except (ValueError, KeyError, TypeError):
