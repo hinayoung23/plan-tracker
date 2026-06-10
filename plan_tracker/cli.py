@@ -269,12 +269,17 @@ def cmd_cron_setup(
         "payload": {
             "kind": "agentTurn",
             "message": (
-                f"exec {sys.executable}"
-                " -m plan_tracker.cli notifications --ack。"
-                "如果输出为空则回复NO_REPLY，否则原样发送给用户（不要加多余内容）。"
+                "执行以下两步流程：\n\n"
+                "第一步：运行命令查看待投递通知\n"
+                f"  exec {sys.executable} -m plan_tracker.cli notifications --json\n\n"
+                "第二步：根据结果处理\n"
+                "  - 如果返回的是空数组 []，只回复 NO_REPLY（不要多说一个字）。\n"
+                "  - 如果数组中有通知，你必须逐条把每条通知的 message 内容发送给用户。发送完毕后，执行以下命令确认已送达（把 <id> 替换为实际的通知 id）：\n"
+                f"    exec {sys.executable} -m plan_tracker.cli ack <id1> <id2> ...\n\n"
+                "重要：禁止在未发送通知给用户的情况下执行 ack 命令！"
             ),
-            "lightContext": True,
-            "timeoutSeconds": 30,
+            "lightContext": False,
+            "timeoutSeconds": 90,
         },
         "delivery": {
             "mode": "announce",
@@ -405,12 +410,18 @@ def _add_mcp_server_to_config(config_path: Path, dry_run: bool = False) -> bool:
 
 
 def cmd_setup(dry_run: bool = False) -> None:
-    """One-command setup: MCP config + launchd + daemon.
+    """One-command setup: MCP config + daemon.
 
     Handles plan-tracker's own configuration:
     1. Registers the MCP server in OpenClaw's config file
-    2. Installs the launchd plist (survives Mac reboots)
-    3. Starts the daemon
+    2. Starts the daemon (auto-restarted by MCP server watchdog)
+
+    Note: launchd is intentionally NOT used for daemon persistence.
+    The MCP server has a built-in watchdog thread that auto-starts
+    the daemon on first use and revives it if it dies. Using launchd
+    alongside the double-fork daemon causes a conflict where launchd
+    repeatedly tries to spawn a foreground instance that immediately
+    exits because the background daemon is already running.
 
     For agent-platform notification delivery, use ``cron-setup``.
     """
@@ -420,21 +431,20 @@ def cmd_setup(dry_run: bool = False) -> None:
     # ── Step 1: MCP server config ──────────────────────────────────
     config_path = _openclaw_config_path()
     if config_path:
-        print(f"\n[1/3] Configuring MCP server in {config_path}...")
+        print(f"\n[1/2] Configuring MCP server in {config_path}...")
         _add_mcp_server_to_config(config_path, dry_run=dry_run)
     else:
-        print("\n[1/3] OpenClaw config not found at ~/.openclaw/openclaw.json")
+        print("\n[1/2] OpenClaw config not found at ~/.openclaw/openclaw.json")
         print("       Skipping MCP server registration.")
         print(f"       To configure manually, add to your MCP config:")
         print(f"         command: {sys.executable}")
         print(f"         args: ['-m', 'plan_tracker.server']")
 
-    # ── Step 2: launchd persistence ─────────────────────────────────
-    print(f"\n[2/3] Installing launchd plist (survives reboots)...")
-    _install_launchd_plist(dry_run=dry_run)
-
-    # ── Step 3: Daemon ─────────────────────────────────────────────
-    print(f"\n[3/3] Ensuring daemon is running...")
+    # ── Step 2: Daemon ─────────────────────────────────────────────
+    # The MCP server watchdog auto-starts and revives the daemon.
+    # We do NOT install a launchd plist — it conflicts with the
+    # double-fork daemon (KeepAlive loop spam, ~1400 log entries/hr).
+    print(f"\n[2/2] Ensuring daemon is running...")
     if dry_run:
         print("       (dry-run — skipping daemon start)")
     elif is_running():
@@ -447,8 +457,8 @@ def cmd_setup(dry_run: bool = False) -> None:
     print("Setup complete!")
     if config_path:
         print(f"  • MCP server registered in {config_path}")
-    print(f"  • launchd: {_LAUNCHD_PLIST_PATH}")
     print(f"  • Daemon: {'running' if is_running() else 'pending (will auto-start on first MCP call)'}")
+    print(f"  • Daemon persistence: MCP server watchdog (auto-revive every 5 min)")
     print(f"\n  Next step — set up notification polling (optional):")
     print(f"    python -m plan_tracker.cli cron-setup --help")
     print(f"\n  Then restart OpenClaw:")

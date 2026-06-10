@@ -1,20 +1,17 @@
 """Scheduled reminder engine.
 
-Runs a background thread that periodically checks all plans for:
-- Daily morning check-in reminders (default 08:30)
-- Daily evening review confirmations (default 21:30) with 10-min timeout
-- Overdue milestones (past target date)
-- Upcoming milestones (within before_due_days)
-- Stale check-ins (no update in 7+ days)
-- Weekly check-in prompts
+Uses sched to fire reminders at exact configured times instead of
+polling every 5 minutes. On startup, catches up on any reminders
+that were missed while the daemon was down.
 
 Notifications are dispatched through configured channels.
 """
 
 import json
 import logging
+import sched
 import threading
-import time
+import time as _time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,18 +29,12 @@ from plan_tracker.daily_tracker import (
 
 logger = logging.getLogger("plan_tracker.reminder")
 
-CHECK_INTERVAL = 300
 NOTIFICATION_COOLDOWN_HOURS = 12
 STATE_FILE = DATA_DIR / ".reminder_state.json"
 
 
 def _local_now() -> datetime:
-    """Wall-clock time in the system's local timezone.
-
-    Used for all time-window comparisons (daily check-in, review,
-    weekday checks, etc.) so that configured times like 08:30 mean
-    08:30 in the user's timezone, not UTC.
-    """
+    """Wall-clock time in the system's local timezone."""
     return datetime.now()
 
 
@@ -55,95 +46,256 @@ def _utc_now_iso() -> str:
 class ReminderEngine:
 
     def __init__(self):
-        self._thread = None
         self._stop = threading.Event()
+        self._scheduler = sched.scheduler(_time.time, self._interruptible_sleep)
+        self._thread = None
+
+    # ── Interruptible sleep (respects _stop) ──────────────────────
+
+    def _interruptible_sleep(self, delay: float) -> None:
+        """Sleep that returns immediately when stop() is called."""
+        self._stop.wait(delay)
+
+    # ── Lifecycle ─────────────────────────────────────────────────
 
     def start(self):
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name="plan-tracker-reminder")
+        # Catch up on any reminders missed while the daemon was down
+        self._check_all()
+        # Schedule future events at exact configured times
+        self._schedule_all_events()
+        self._thread = threading.Thread(
+            target=self._scheduler.run, daemon=True, name="plan-tracker-reminder",
+        )
         self._thread.start()
-        logger.info("Reminder engine started (check interval: %ds)", CHECK_INTERVAL)
+        logger.info("Reminder engine started (event-scheduled mode)")
 
     def stop(self):
         self._stop.set()
+        for event in list(self._scheduler.queue):
+            self._scheduler.cancel(event)
         if self._thread:
             self._thread.join(timeout=5)
         logger.info("Reminder engine stopped")
 
-    def _run(self):
-        while not self._stop.is_set():
-            try:
-                self._check_all()
-            except Exception:
-                logger.exception("Reminder check failed")
-            self._stop.wait(CHECK_INTERVAL)
+    def check_now(self):
+        """Manually trigger an immediate check of all plans."""
+        self._check_all()
 
-    def _check_all(self):
+    # ── Scheduling ────────────────────────────────────────────────
+
+    def _schedule_all_events(self) -> None:
+        """Schedule the next event of each type for every enabled plan."""
+        index = load_index()
+        if not index or not index.get("plans"):
+            return
+        for entry in index["plans"]:
+            plan = load_plan(entry["name"])
+            if not plan:
+                continue
+            reminders = plan.get("reminders", {})
+            if not reminders.get("enabled", True):
+                continue
+
+            if reminders.get("daily_checkin_enabled", True):
+                t = reminders.get("daily_checkin_time", "08:30")
+                self._schedule_event(t, self._fire_daily_checkin, entry["name"])
+
+            if reminders.get("daily_review_enabled", True):
+                t = reminders.get("daily_review_time", "21:30")
+                self._schedule_event(t, self._fire_daily_review, entry["name"])
+
+            # Milestone checks run once per day (a few minutes after checkin)
+            t = reminders.get("daily_checkin_time", "08:30")
+            self._schedule_event(t, self._fire_milestone_check, entry["name"],
+                                offset_minutes=5)
+
+    def _schedule_event(self, time_str: str, callback, plan_name: str,
+                        offset_minutes: int = 0) -> None:
+        """Schedule *callback(plan_name)* at the next occurrence of HH:MM (+ offset)."""
+        try:
+            h, m = map(int, time_str.split(":"))
+        except (ValueError, IndexError):
+            logger.warning("Invalid time string '%s' for plan '%s'", time_str, plan_name)
+            return
+        now = _local_now()
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        target += timedelta(minutes=offset_minutes)
+        if target <= now:
+            target += timedelta(days=1)
+        self._scheduler.enterabs(target.timestamp(), 1, callback, (plan_name,))
+        logger.debug("Scheduled %s for %s at %s",
+                     callback.__name__, plan_name, target.isoformat())
+
+    # ── Event callbacks ───────────────────────────────────────────
+
+    def _fire_daily_checkin(self, plan_name: str) -> None:
+        """Fire the morning check-in reminder, then reschedule."""
+        plan = load_plan(plan_name)
+        if not plan:
+            return
+        reminders = plan.get("reminders", {})
+
+        today_state = get_today_state(plan_name)
+        if not today_state.get("checkin_reminded"):
+            record_checkin_reminded(plan_name)
+            milestone = _get_active_milestone(plan)
+            archived = get_archived_for_date(plan_name, _today_str())
+            entry = _plan_index_entry(plan_name)
+            if entry:
+                self._dispatch([
+                    _build_daily_checkin(entry, plan, milestone, archived),
+                ])
+
+        # Reschedule for tomorrow
+        if reminders.get("daily_checkin_enabled", True):
+            t = reminders.get("daily_checkin_time", "08:30")
+            self._schedule_event(t, self._fire_daily_checkin, plan_name)
+
+    def _fire_daily_review(self, plan_name: str) -> None:
+        """Fire the evening review reminder, then reschedule."""
+        plan = load_plan(plan_name)
+        if not plan:
+            return
+        reminders = plan.get("reminders", {})
+
+        today_state = get_today_state(plan_name)
+        if not today_state.get("review_reminded"):
+            record_review_reminded(plan_name)
+            milestone = _get_active_milestone(plan)
+            timeout = reminders.get("confirmation_timeout_minutes", 10)
+            entry = _plan_index_entry(plan_name)
+            if entry:
+                self._dispatch([
+                    _build_daily_review(entry, plan, milestone, timeout),
+                ])
+
+        # Reschedule for tomorrow
+        if reminders.get("daily_review_enabled", True):
+            t = reminders.get("daily_review_time", "21:30")
+            self._schedule_event(t, self._fire_daily_review, plan_name)
+
+        # Also schedule the timeout check
+        timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
+        t = reminders.get("daily_review_time", "21:30")
+        self._schedule_event(t, self._fire_review_timeout, plan_name,
+                            offset_minutes=timeout_minutes)
+
+    def _fire_review_timeout(self, plan_name: str) -> None:
+        """Check for review timeout and auto-mark if needed."""
+        plan = load_plan(plan_name)
+        if not plan:
+            return
+        reminders = plan.get("reminders", {})
+        timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
+
+        if check_review_timeout(plan_name, timeout_minutes):
+            key = f"{plan_name}:daily_timeout"
+            state = _load_state()
+            if _should_notify(state, key, "daily_timeout"):
+                result = auto_mark_incomplete(plan_name)
+                if result:
+                    entry = _plan_index_entry(plan_name)
+                    if entry:
+                        self._dispatch([_build_daily_timeout(entry, plan)])
+                        _save_state_after_timeout(plan_name, "daily_timeout")
+
+    def _fire_milestone_check(self, plan_name: str) -> None:
+        """Check all milestones for one plan (overdue/upcoming/stale/weekly), then reschedule."""
+        self._check_milestones_for_plan(plan_name)
+        # Reschedule for tomorrow (5 min after checkin time)
+        plan = load_plan(plan_name)
+        if plan:
+            reminders = plan.get("reminders", {})
+            t = reminders.get("daily_checkin_time", "08:30")
+            self._schedule_event(t, self._fire_milestone_check, plan_name,
+                                offset_minutes=5)
+
+    # ── Full check (used on startup and check_now) ────────────────
+
+    def _check_all(self) -> None:
+        """Run a full check of all plans. Safe to call anytime — cooldowns
+        prevent duplicates with scheduled events."""
         state = _load_state()
         index = load_index()
         if not index or not index.get("plans"):
             return
 
-        today = _local_now().strftime("%Y-%m-%d")
         notifications = []
-
         for entry in index["plans"]:
             plan = load_plan(entry["name"])
             if not plan:
                 continue
-
             reminders = plan.get("reminders", {})
             if not reminders.get("enabled", True):
                 continue
 
-            # ── Daily reminders (new) ──
-            daily_notifications = self._check_daily(entry, plan)
-            notifications.extend(daily_notifications)
+            # Daily reminders
+            daily = self._check_daily(entry, plan)
+            notifications.extend(daily)
 
-            before_days = reminders.get("before_due_days", 3)
-
-            for m in plan.get("milestones", []):
-                if m["status"] in ("completed", "blocked"):
-                    continue
-
-                target = m.get("target_date", "")
-                if not target:
-                    continue
-
-                target_dt = _parse_date(target)
-                if target_dt is None:
-                    continue
-
-                days_remaining = (target_dt - _local_now()).days
-                key = f"{entry['name']}:{m['id']}"
-
-                if days_remaining < 0:
-                    if _should_notify(state, key, "overdue"):
-                        notifications.append(_build_overdue(m, entry, days_remaining))
-                        state[key] = {"type": "overdue", "time": _now_iso()}
-
-                elif 0 <= days_remaining <= before_days:
-                    if _should_notify(state, key, "upcoming"):
-                        notifications.append(_build_upcoming(m, entry, days_remaining))
-                        state[key] = {"type": "upcoming", "time": _now_iso()}
-
-                if _is_stale(m) and _should_notify(state, key, "stale"):
-                    notifications.append(_build_stale(m, entry))
-                    state[key] = {"type": "stale", "time": _now_iso()}
-
-            weekly_day = reminders.get("weekly_checkin_day", "")
-            if weekly_day and _is_today(weekly_day):
-                key = f"{entry['name']}:weekly"
-                if _should_notify(state, key, "weekly"):
-                    notifications.append(_build_weekly(entry, plan))
-                    state[key] = {"type": "weekly", "time": _now_iso()}
+            # Milestone checks (inline)
+            msgs = self._check_milestones_for_plan(entry["name"])
+            # _check_milestones_for_plan dispatches internally, so no need to extend
 
         if notifications:
             self._dispatch(notifications)
 
         _save_state(state)
+
+    def _check_milestones_for_plan(self, plan_name: str) -> None:
+        """Check milestones for a single plan and dispatch any notifications."""
+        plan = load_plan(plan_name)
+        if not plan:
+            return
+        entry = _plan_index_entry(plan_name)
+        if not entry:
+            return
+
+        reminders = plan.get("reminders", {})
+        state = _load_state()
+        before_days = reminders.get("before_due_days", 3)
+        notifications = []
+
+        for m in plan.get("milestones", []):
+            if m["status"] in ("completed", "blocked"):
+                continue
+            target = m.get("target_date", "")
+            if not target:
+                continue
+            target_dt = _parse_date(target)
+            if target_dt is None:
+                continue
+            days_remaining = (target_dt - _local_now()).days
+            key = f"{entry['name']}:{m['id']}"
+
+            if days_remaining < 0:
+                if _should_notify(state, key, "overdue"):
+                    notifications.append(_build_overdue(m, entry, days_remaining))
+                    state[key] = {"type": "overdue", "time": _utc_now_iso()}
+            elif 0 <= days_remaining <= before_days:
+                if _should_notify(state, key, "upcoming"):
+                    notifications.append(_build_upcoming(m, entry, days_remaining))
+                    state[key] = {"type": "upcoming", "time": _utc_now_iso()}
+            if _is_stale(m) and _should_notify(state, key, "stale"):
+                notifications.append(_build_stale(m, entry))
+                state[key] = {"type": "stale", "time": _utc_now_iso()}
+
+        weekly_day = reminders.get("weekly_checkin_day", "")
+        if weekly_day and _is_today(weekly_day):
+            key = f"{entry['name']}:weekly"
+            if _should_notify(state, key, "weekly"):
+                notifications.append(_build_weekly(entry, plan))
+                state[key] = {"type": "weekly", "time": _utc_now_iso()}
+
+        _save_state(state)
+
+        if notifications:
+            self._dispatch(notifications)
+
+    # ── Dispatch ──────────────────────────────────────────────────
 
     def _dispatch(self, notifications):
         for note in notifications:
@@ -160,8 +312,6 @@ class ReminderEngine:
 
             for ch in channels:
                 if ch == "mcp":
-                    # Write to notification queue instead of direct stderr.
-                    # The queue is read by CLI / MCP notification_fetch tool.
                     enqueue_notification(
                         plan_name=plan_name,
                         ntype=ntype,
@@ -175,25 +325,17 @@ class ReminderEngine:
                     if ecfg.get("enabled"):
                         EmailChannel(ecfg).send(note, plan_name, mtitle, mid)
 
-    def check_now(self):
-        self._check_all()
-        return []
-
-    # ── Daily reminder logic ──
+    # ── Daily check (used by _check_all on startup) ───────────────
 
     def _check_daily(self, entry: dict, plan: dict) -> list[dict]:
-        """Check and trigger daily check-in / review reminders for one plan.
-
-        Returns a list of notification dicts to dispatch.
-        """
+        """Check and trigger daily check-in / review reminders for one plan."""
         reminders = plan.get("reminders", {})
         notifications = []
         now = _local_now()
 
-        # Morning daily check-in
         if reminders.get("daily_checkin_enabled", True):
             chk_time = reminders.get("daily_checkin_time", "08:30")
-            if self._in_time_window(now, chk_time, window_hours=3):
+            if _in_time_window(now, chk_time):
                 today_state = get_today_state(entry["name"])
                 if not today_state.get("checkin_reminded"):
                     record_checkin_reminded(entry["name"])
@@ -203,10 +345,9 @@ class ReminderEngine:
                         _build_daily_checkin(entry, plan, milestone, archived)
                     )
 
-        # Evening daily review
         if reminders.get("daily_review_enabled", True):
             rev_time = reminders.get("daily_review_time", "21:30")
-            if self._in_time_window(now, rev_time, window_hours=3):
+            if _in_time_window(now, rev_time):
                 today_state = get_today_state(entry["name"])
                 if not today_state.get("review_reminded"):
                     record_review_reminded(entry["name"])
@@ -216,10 +357,8 @@ class ReminderEngine:
                         _build_daily_review(entry, plan, milestone, timeout)
                     )
 
-        # Timeout check: if evening review sent, not confirmed, and timeout passed
         timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
         if check_review_timeout(entry["name"], timeout_minutes):
-            # Use cooldown to avoid re-notifying every 5 minutes
             key = f"{entry['name']}:daily_timeout"
             state = _load_state()
             if _should_notify(state, key, "daily_timeout"):
@@ -230,23 +369,19 @@ class ReminderEngine:
 
         return notifications
 
-    @staticmethod
-    def _in_time_window(now: datetime, time_str: str, window_hours: int = 3) -> bool:
-        """Check if now is within [time_str, time_str + window_hours]."""
-        try:
-            parts = time_str.split(":")
-            target_h, target_m = int(parts[0]), int(parts[1])
-            target_minutes = target_h * 60 + target_m
-            now_minutes = now.hour * 60 + now.minute
-            window_minutes = window_hours * 60
-            return target_minutes <= now_minutes < target_minutes + window_minutes
-        except (ValueError, IndexError):
-            return False
 
-    # ── Daily reminder logic (end) ──
+# ── Helpers ───────────────────────────────────────────────────────
+
+def _plan_index_entry(plan_name: str) -> dict | None:
+    """Get the index entry for a plan."""
+    index = load_index()
+    for p in index.get("plans", []):
+        if p["name"] == plan_name:
+            return p
+    return None
+
 
 def _get_active_milestone(plan: dict) -> dict | None:
-    """Get the first in_progress or pending milestone."""
     for m in plan.get("milestones", []):
         if m["status"] == "in_progress":
             return m
@@ -260,18 +395,30 @@ def _today_str() -> str:
     return _local_now().strftime("%Y-%m-%d")
 
 
+def _in_time_window(now: datetime, time_str: str, window_hours: int = 3) -> bool:
+    """Check if now is within [time_str, time_str + window_hours]."""
+    try:
+        parts = time_str.split(":")
+        target_h, target_m = int(parts[0]), int(parts[1])
+        target_minutes = target_h * 60 + target_m
+        now_minutes = now.hour * 60 + now.minute
+        window_minutes = window_hours * 60
+        return target_minutes <= now_minutes < target_minutes + window_minutes
+    except (ValueError, IndexError):
+        return False
+
+
 def _save_state_after_timeout(plan_name: str, ntype: str) -> None:
-    """Record a timeout notification in the reminder state for cooldown."""
     state = _load_state()
     key = f"{plan_name}:daily_timeout"
-    state[key] = {"type": ntype, "time": _now_iso()}
+    state[key] = {"type": ntype, "time": _utc_now_iso()}
     _save_state(state)
 
 
-# ── Daily notification builders ──
+# ── Notification builders ─────────────────────────────────────────
 
-def _build_daily_checkin(entry: dict, plan: dict, milestone: dict | None, archived: dict | None) -> dict:
-    """Build morning daily check-in notification."""
+def _build_daily_checkin(entry: dict, plan: dict, milestone: dict | None,
+                         archived: dict | None) -> dict:
     today = _today_str()
     plan_title = entry.get("title", entry["name"])
     goal = plan.get("goal", "")
@@ -315,8 +462,8 @@ def _build_daily_checkin(entry: dict, plan: dict, milestone: dict | None, archiv
     }
 
 
-def _build_daily_review(entry: dict, plan: dict, milestone: dict | None, timeout_minutes: int) -> dict:
-    """Build evening daily review confirmation notification."""
+def _build_daily_review(entry: dict, plan: dict, milestone: dict | None,
+                        timeout_minutes: int) -> dict:
     plan_title = entry.get("title", entry["name"])
 
     msg_parts = [
@@ -351,7 +498,6 @@ def _build_daily_review(entry: dict, plan: dict, milestone: dict | None, timeout
 
 
 def _build_daily_timeout(entry: dict, plan: dict) -> dict:
-    """Build timeout auto-mark notification."""
     plan_title = entry.get("title", entry["name"])
 
     msg_parts = [
@@ -371,8 +517,6 @@ def _build_daily_timeout(entry: dict, plan: dict) -> dict:
         "plan_title": plan_title,
     }
 
-
-# ── Milestone notification builders ──
 
 def _build_overdue(m, entry, days):
     ago = abs(days)
@@ -446,19 +590,13 @@ def _build_weekly(entry, plan):
     }
 
 
-# ── utils ──
+# ── Utils ─────────────────────────────────────────────────────────
 
 def _parse_date(date_str):
-    """Parse a YYYY-MM-DD date string into a naive local datetime at midnight."""
     try:
         return datetime.fromisoformat(date_str)
     except (ValueError, TypeError):
         return None
-
-
-def _now_iso():
-    """UTC timestamp for persistent storage."""
-    return _utc_now_iso()
 
 
 def _is_stale(m):
@@ -466,7 +604,6 @@ def _is_stale(m):
     if not checkins:
         return False
     try:
-        # Stored ISO strings are UTC-aware; strip tzinfo for naive comparison
         last_dt = datetime.fromisoformat(checkins[-1]["date"]).replace(tzinfo=None)
         return (_local_now() - last_dt).days > 7
     except (ValueError, KeyError):
