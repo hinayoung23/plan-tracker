@@ -19,7 +19,7 @@
 - **里程碑管理** — 添加/更新里程碑，查看当前和即将到期的里程碑
 - **进度打卡** — 记录每个里程碑的完成百分比、投入时间、心得体会、阻碍和心情
 - **计划分析** — 计算进度偏差、节奏系数、剩余工时预估、心情趋势
-- **定时提醒** — 守护进程每 5 分钟轮询，检测过期/即将到期/停滞的里程碑
+- **定时提醒** — 基于事件调度，按时触发每日早晚提醒、过期/即将到期/停滞的里程碑检测
 - **每日提醒** — 早晚两次提醒：早晨进度提醒（默认 08:30）+ 晚间完成确认（默认 21:30），支持 10 分钟超时自动判定
 - **自动拉起** — MCP Server 启动时自动检查并拉起守护进程，附带 watchdog 线程守护存活
 - **通知投递** — 通过 CLI 拉取通知队列，配合任意定时任务即可投递到消息平台
@@ -37,7 +37,7 @@
 # 一键安装
 openclaw plugins install clawhub:plan-tracker
 
-# 初始化配置（Python 依赖 + MCP 注册 + launchd + daemon）
+# 初始化配置（Python 依赖 + MCP 注册 + daemon）
 bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 ```
 
@@ -45,7 +45,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.4.1/plan_tracker-1.4.1-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.4.4/plan_tracker-1.4.4-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
@@ -67,8 +67,7 @@ python -m plan_tracker.cli setup --dry-run
 
 `setup` 自动完成：
 1. ✅ 在 `~/.openclaw/openclaw.json` 中注册 MCP Server（自动检测 Python 路径）
-2. ✅ 安装 launchd plist（Mac 重启后自动拉起 daemon）
-3. ✅ 启动守护进程
+2. ✅ 启动守护进程（MCP Server 内置 watchdog 线程每 5 分钟检测存活，挂了自动拉起）
 
 > 通知投递由 agent 平台负责。如果你使用 OpenClaw，可运行 `python -m plan_tracker.cli cron-setup --help` 查看定时任务配置选项。
 
@@ -146,9 +145,9 @@ Checkin
 
 ### 部署（首次使用）
 
-Plan Tracker 的提醒功能通过**独立守护进程**运行。守护进程支持两种自动拉起方式，无需手动管理：
+Plan Tracker 的提醒功能通过**独立守护进程**运行，支持自动拉起，无需手动管理：
 
-#### 方式一：MCP Server 自动拉起（推荐）
+#### MCP Server 自动拉起
 
 当 AI 助手首次调用 plan-tracker MCP 工具时，`server.py` 会自动检查并启动守护进程，同时启动 watchdog 线程每 5 分钟检测守护进程存活状态，挂了自动拉起。
 
@@ -156,15 +155,9 @@ Plan Tracker 的提醒功能通过**独立守护进程**运行。守护进程支
 # 无需手动操作 —— MCP Server 启动时自动完成
 ```
 
-#### 方式二：CLI 轮询自愈
-
-`notifications --ack` 命令在执行前会自动检查守护进程是否在运行，未运行则自动拉起。配合定时任务即可实现全自动运维。
+#### 手动管理
 
 ```bash
-# 查看通知（自动拉起守护进程 + 标记已投递）
-python -m plan_tracker.cli notifications --ack
-
-# 单独管理守护进程（一般不需要）
 python -m plan_tracker.cli daemon start
 python -m plan_tracker.cli daemon status
 python -m plan_tracker.cli daemon stop
@@ -175,10 +168,10 @@ python -m plan_tracker.cli daemon stop
 守护进程将提醒写入 `data/notification_queue.json`。外部系统通过 CLI 拉取并投递给用户：
 
 ```bash
-python -m plan_tracker.cli notifications --ack
+python -m plan_tracker.cli deliver
 ```
 
-`--ack` 确保每条通知只投递一次。将此命令配置到定时任务（如 cron）中即可实现自动通知投递。
+`deliver` 命令原子地完成「打印通知内容 + 标记已投递」，配合 OpenClaw cron 即可实现自动通知投递。如果输出为空则无待投递通知。
 
 > 如果你使用 OpenClaw，可用 `python -m plan_tracker.cli cron-setup` 生成定时轮询配置，具体参数由你的 agent 平台决定。
 
@@ -192,12 +185,13 @@ python -m plan_tracker.cli notifications --ack
 - 两种提醒的触发时间均可在 `reminder_configure` 中自定义
 
 #### 里程碑提醒
-- 后台线程每 5 分钟检查一次所有计划
+- 基于事件调度，每天在早晨提醒时间触发一次里程碑检查
 - 过期里程碑（超过目标日期未完成）→ 推送提醒
 - 即将到期（before_due_days 内）→ 推送提醒
 - 停滞里程碑（7 天未更新进度）→ 推送提醒
 - 每周检查（指定星期几）→ 推送周进度回顾
 - 同类型通知 12 小时内不重复推送
+- Daemon 启动时自动补检遗漏的提醒
 
 ### 项目结构
 
@@ -245,9 +239,9 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 - **Check-ins** — Record progress percentage, time spent, notes, blockers, and morale for each milestone
 - **Analysis** — Progress deviation, pace ratio, remaining effort estimates, morale trends
 - **Daily Reminders** — Morning check-in (default 08:30) + evening review (default 21:30) with 10-min auto-timeout
-- **Milestone Reminders** — Daemon polls every 5 minutes for overdue, upcoming, and stale milestones
+- **Milestone Reminders** — Event-scheduled engine fires reminders at exact configured times, with startup catch-up for missed reminders
 - **Auto-start Daemon** — MCP Server auto-starts the daemon on first use with a watchdog thread; CLI `--ack` also self-heals
-- **Notification delivery** — CLI-based queue polling; pair with any scheduler to forward to your messaging platform
+- **Notification delivery** — Atomic `deliver` command prints and acks notifications; pair with any scheduler to forward to your messaging platform
 
 ### Requirements
 
@@ -270,7 +264,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 
 ```bash
 # From GitHub Releases
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.4.1/plan_tracker-1.4.1-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.4.4/plan_tracker-1.4.4-py3-none-any.whl
 
 # Or from source
 git clone https://github.com/hinayoung23/plan-tracker.git
@@ -292,8 +286,7 @@ python -m plan_tracker.cli setup --dry-run
 
 `setup` automates:
 1. ✅ Registers the MCP server in `~/.openclaw/openclaw.json` (auto-detects Python path)
-2. ✅ Installs a launchd plist (auto-restarts daemon after Mac reboots)
-3. ✅ Starts the daemon
+2. ✅ Starts the daemon (MCP Server watchdog auto-revives it every 5 minutes)
 
 > Notification delivery is handled by your agent platform. If you use OpenClaw, run `python -m plan_tracker.cli cron-setup --help` for scheduling options.
 
@@ -305,13 +298,13 @@ launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 
 #### Notification delivery
 
-The daemon writes notifications to `data/notification_queue.json`. External systems poll them via:
+The daemon writes notifications to `data/notification_queue.json`. External systems deliver them via:
 
 ```bash
-python -m plan_tracker.cli notifications --ack
+python -m plan_tracker.cli deliver
 ```
 
-The `--ack` flag ensures each notification is delivered exactly once. Set up a periodic task (e.g. cron) to run this command and forward output to the user.
+The `deliver` command atomically prints pending notifications and marks them as delivered. Empty output means nothing to deliver. Set up a periodic task (e.g. cron) to run this command and forward output to the user.
 
 > If you use OpenClaw, `python -m plan_tracker.cli cron-setup` generates a ready-to-use scheduling config. The specific delivery parameters depend on your agent platform.
 ```
