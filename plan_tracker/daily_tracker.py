@@ -194,7 +194,7 @@ def check_review_timeout(plan_name: str, timeout_minutes: int = 10) -> bool:
             tzinfo=timezone.utc
         )
         elapsed_minutes = (datetime.now(timezone.utc) - reminded_dt).total_seconds() / 60
-        return elapsed_minutes > timeout_minutes
+        return elapsed_minutes >= timeout_minutes
     except (ValueError, TypeError):
         return False
 

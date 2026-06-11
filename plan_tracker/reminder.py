@@ -218,7 +218,6 @@ class ReminderEngine:
     def _check_all(self) -> None:
         """Run a full check of all plans. Safe to call anytime — cooldowns
         prevent duplicates with scheduled events."""
-        state = _load_state()
         index = load_index()
         if not index or not index.get("plans"):
             return
@@ -242,8 +241,6 @@ class ReminderEngine:
 
         if notifications:
             self._dispatch(notifications)
-
-        _save_state(state)
 
     def _check_milestones_for_plan(self, plan_name: str) -> None:
         """Check milestones for a single plan and dispatch any notifications."""
