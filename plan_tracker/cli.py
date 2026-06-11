@@ -192,6 +192,39 @@ def cmd_ack(ids: list[str]) -> None:
     print(f"Marked {count} notification(s) as delivered")
 
 
+def cmd_deliver() -> None:
+    """Fetch, print, and ack pending notifications in one atomic step.
+
+    Designed for cron/agent delivery: the printed output is the
+    user-facing message content.  An empty output means nothing to
+    deliver, so the agent replies NO_REPLY.
+
+    Notifications are acked only after being printed, so if the
+    process crashes mid-output the un-acked notifications remain
+    in the queue for the next run.
+    """
+    if not is_running():
+        cmd_daemon_start()
+
+    pending = fetch_all()
+    if not pending:
+        return  # Empty output → agent sees nothing → NO_REPLY
+
+    lines = []
+    ids = []
+    for note in pending:
+        lines.append(f"--- [{note['type']}] {note['plan_title']} ---")
+        lines.append(note["message"])
+        lines.append("")
+        ids.append(note["id"])
+
+    # Print first — if the process crashes here, notifications survive
+    print("\n".join(lines).rstrip())
+
+    # Then ack
+    mark_delivered(ids)
+
+
 def _validate_qq_id(qq_id: str) -> str | None:
     """Return an error message if the QQ ID looks invalid, or None if ok."""
     if not qq_id or not qq_id.strip():
@@ -269,17 +302,10 @@ def cmd_cron_setup(
         "payload": {
             "kind": "agentTurn",
             "message": (
-                "执行以下两步流程：\n\n"
-                "第一步：运行命令查看待投递通知\n"
-                f"  exec {sys.executable} -m plan_tracker.cli notifications --json\n\n"
-                "第二步：根据结果处理\n"
-                "  - 如果返回的是空数组 []，只回复 NO_REPLY（不要多说一个字）。\n"
-                "  - 如果数组中有通知，你必须逐条把每条通知的 message 内容发送给用户。发送完毕后，执行以下命令确认已送达（把 <id> 替换为实际的通知 id）：\n"
-                f"    exec {sys.executable} -m plan_tracker.cli ack <id1> <id2> ...\n\n"
-                "重要：禁止在未发送通知给用户的情况下执行 ack 命令！"
+                f"exec {sys.executable} -m plan_tracker.cli deliver\n"
+                "如果以上命令没有任何输出则回复NO_REPLY，否则原样转发以上命令的输出给用户"
             ),
-            "lightContext": False,
-            "timeoutSeconds": 90,
+            "timeoutSeconds": 30,
         },
         "delivery": {
             "mode": "announce",
@@ -483,6 +509,9 @@ def main() -> None:
     ack_parser = sub.add_parser("ack", help="Mark notifications as delivered")
     ack_parser.add_argument("ids", nargs="+", help="Notification IDs to ack")
 
+    # deliver (fetch + print + ack — atomic, for cron/agent)
+    sub.add_parser("deliver", help="Fetch, print, and ack pending notifications atomically")
+
     # setup (one-command install)
     setup_parser = sub.add_parser(
         "setup",
@@ -539,6 +568,8 @@ def main() -> None:
         cmd_notifications(json_output=args.json, ack=args.ack)
     elif args.command == "ack":
         cmd_ack(args.ids)
+    elif args.command == "deliver":
+        cmd_deliver()
     elif args.command == "cron-setup":
         cmd_cron_setup(
             qq_id=args.qq_id,
