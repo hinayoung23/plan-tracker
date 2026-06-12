@@ -246,14 +246,18 @@ def _webhook_plist_path() -> Path:
     return _LAUNCHD_PLIST_DIR / f"{_webhook_launchd_label()}.plist"
 
 
-def cmd_webhook_setup(port: int = 9876, dry_run: bool = False) -> None:
+def cmd_webhook_setup(port: int = 9876, to: str = "", dry_run: bool = False) -> None:
     """Install the webhook receiver as a launchd service for real-time delivery.
 
-    The webhook receiver listens on localhost:<port> and runs
-    ``plan-tracker.cli deliver`` whenever the daemon POSTs a notification.
-    This eliminates the need for a polling cron job — notifications are
-    delivered within milliseconds of being generated.
+    The webhook receiver listens on localhost:<port> and delivers
+    notifications via ``openclaw agent --deliver`` to the specified
+    channel target whenever the daemon POSTs a notification.
+    This eliminates the need for a polling cron job.
     """
+    if not to:
+        print("Error: --to is required (e.g. qqbot:c2c:<hex-id>)")
+        sys.exit(1)
+
     script_path = Path(__file__).resolve().parent.parent / "scripts" / "webhook_receiver.py"
     pkg_path = _detect_plan_tracker_path()
     log_dir = str(Path.home() / "mcp-servers" / "plan-tracker" / "data")
@@ -281,6 +285,8 @@ def cmd_webhook_setup(port: int = 9876, dry_run: bool = False) -> None:
         <string>{script_path}</string>
         <string>--port</string>
         <string>{port}</string>
+        <string>--to</string>
+        <string>{to}</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -631,6 +637,10 @@ def main() -> None:
         help="Webhook receiver port (default: 9876)",
     )
     webhook_parser.add_argument(
+        "--to", required=True,
+        help="Delivery target, e.g. qqbot:c2c:<hex-id>",
+    )
+    webhook_parser.add_argument(
         "--dry-run", action="store_true",
         help="Preview changes without writing anything",
     )
@@ -669,7 +679,7 @@ def main() -> None:
             job_id=args.job_id,
         )
     elif args.command == "webhook-setup":
-        cmd_webhook_setup(port=args.port, dry_run=args.dry_run)
+        cmd_webhook_setup(port=args.port, to=args.to, dry_run=args.dry_run)
     else:
         parser.print_help()
 
