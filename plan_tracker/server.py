@@ -292,7 +292,7 @@ async def daily_status(plan_name: str) -> str:
 
 @mcp.tool()
 async def email_configure(plan_name: str, config: dict) -> str:
-    """Configure email notifications (premium feature). config: enabled, api_url, api_key, recipient."""
+    """Configure email notifications via mail.tempbox.cn. config: enabled, api_url, api_key_id, api_secret, recipient."""
     from plan_tracker.storage import load_plan, save_plan
 
     plan = load_plan(plan_name)
@@ -300,7 +300,7 @@ async def email_configure(plan_name: str, config: dict) -> str:
         return _json_response({"success": False, "error": f"Plan '{plan_name}' not found"})
 
     email = plan.setdefault("reminders", {}).setdefault("email", {})
-    for key in ("enabled", "api_url", "api_key", "recipient"):
+    for key in ("enabled", "api_url", "api_key_id", "api_secret", "recipient"):
         if key in config:
             email[key] = config[key]
 
@@ -309,7 +309,10 @@ async def email_configure(plan_name: str, config: dict) -> str:
         channels.append("email")
 
     save_plan(plan_name, plan)
-    return _json_response({"success": True, "email": email})
+    # Never expose api_secret in response
+    safe = {k: v for k, v in email.items() if k != "api_secret"}
+    safe["api_secret"] = "***" if email.get("api_secret") else ""
+    return _json_response({"success": True, "email": safe})
 
 
 @mcp.tool()

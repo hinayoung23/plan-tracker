@@ -4,4 +4,4 @@ Provides milestone tracking, progress check-ins, plan analysis,
 daily reminders, and a standalone daemon for notification delivery.
 """
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"

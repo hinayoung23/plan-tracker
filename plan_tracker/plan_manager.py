@@ -65,8 +65,9 @@ def create_plan(
             "notification_channels": ["mcp"],
             "email": {
                 "enabled": False,
-                "api_url": "http://mail.tempbox.cn/api/send-email",
-                "api_key": "plan-tracker-api-key",
+                "api_url": "https://mail.tempbox.cn/api/send-email",
+                "api_key_id": "",
+                "api_secret": "",
                 "recipient": "",
             },
             "webhook": {
