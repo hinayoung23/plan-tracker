@@ -29,6 +29,7 @@ logger = logging.getLogger("webhook-receiver")
 
 _PKG_DIR = Path(__file__).resolve().parent.parent
 _PYTHON = sys.executable
+_DELIVERY_CONFIG = _PKG_DIR / "data" / "webhook_delivery.json"
 
 # Resolve the openclaw binary (not the shell function)
 _OPENCLAW_BIN = None
@@ -42,11 +43,21 @@ for _candidate in (
         break
 
 if _OPENCLAW_BIN is None:
-    # Fall back to PATH search
     import shutil as _shutil
     _found = _shutil.which("openclaw")
     if _found:
         _OPENCLAW_BIN = _found
+
+
+def _load_delivery_config() -> dict:
+    """Load delivery config from disk, with CLI-arg overrides."""
+    if _DELIVERY_CONFIG.exists():
+        try:
+            with open(_DELIVERY_CONFIG, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
 
 # ── Delivery ────────────────────────────────────────────────────
 
@@ -149,18 +160,27 @@ def main():
     parser = argparse.ArgumentParser(description="Plan Tracker webhook receiver")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address")
     parser.add_argument("--port", type=int, default=9876, help="Listen port")
-    parser.add_argument("--channel", default="qqbot",
-                        help="OpenClaw delivery channel (default: qqbot)")
+    parser.add_argument("--channel", default="",
+                        help="OpenClaw delivery channel (auto-detected if not set)")
     parser.add_argument("--to", default="",
-                        help="Delivery target, e.g. qqbot:c2c:<hex-id>")
+                        help="Delivery target (auto-detected if not set)")
     args = parser.parse_args()
 
-    if not args.to:
-        parser.error("--to is required (e.g. qqbot:c2c:<hex-id>)")
+    # Load delivery config from file (set by webhook-setup)
+    cfg = _load_delivery_config()
+
+    channel = args.channel or cfg.get("channel", "qqbot")
+    to = args.to or cfg.get("to", "")
+
+    if not to:
+        print("Error: --to is required (e.g. qqbot:c2c:<hex-id>). "
+              "Run 'python -m plan_tracker.cli webhook-setup' to configure.",
+              file=sys.stderr)
+        sys.exit(1)
 
     # Inject config into handler class
-    WebhookHandler.channel = args.channel
-    WebhookHandler.to = args.to
+    WebhookHandler.channel = channel
+    WebhookHandler.to = to
 
     server = HTTPServer((args.host, args.port), WebhookHandler)
     logger.info("Webhook receiver listening on http://%s:%d", args.host, args.port)

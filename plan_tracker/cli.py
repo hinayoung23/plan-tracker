@@ -246,21 +246,81 @@ def _webhook_plist_path() -> Path:
     return _LAUNCHD_PLIST_DIR / f"{_webhook_launchd_label()}.plist"
 
 
-def cmd_webhook_setup(port: int = 9876, to: str = "", dry_run: bool = False) -> None:
+def _detect_delivery_channel() -> tuple[str, str]:
+    """Auto-detect delivery channel and target from OpenClaw config.
+
+    Returns (channel, to) — e.g. ("qqbot", "qqbot:c2c:<hex>").
+    Falls back to ("qqbot", "") if nothing is found.
+    """
+    # 1. Try OpenClaw config for enabled channels
+    config_path = Path.home() / ".openclaw" / "openclaw.json"
+    channel = "qqbot"
+    to = ""
+
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+            channels = cfg.get("channels", {})
+            # Find the first enabled channel
+            for ch_name, ch_cfg in channels.items():
+                if ch_cfg.get("enabled"):
+                    channel = ch_name
+                    break
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # 2. Try cron jobs for the delivery target
+    cron_path = Path.home() / ".openclaw" / "cron" / "jobs.json"
+    if cron_path.exists():
+        try:
+            with open(cron_path, "r") as f:
+                cron_data = json.load(f)
+            for job in cron_data.get("jobs", []):
+                delivery = job.get("delivery", {})
+                if delivery.get("channel") == channel and delivery.get("to"):
+                    to = delivery["to"]
+                    break
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # 3. Build full target if only ID was found
+    if to and not to.startswith(f"{channel}:"):
+        to = f"{channel}:c2c:{to}" if channel == "qqbot" else f"{channel}:{to}"
+
+    return channel, to
+
+
+def cmd_webhook_setup(port: int = 9876, to: str = "",
+                      channel: str = "", dry_run: bool = False) -> None:
     """Install the webhook receiver as a launchd service for real-time delivery.
 
-    The webhook receiver listens on localhost:<port> and delivers
-    notifications via ``openclaw agent --deliver`` to the specified
-    channel target whenever the daemon POSTs a notification.
-    This eliminates the need for a polling cron job.
+    Auto-detects the delivery channel and target from OpenClaw config
+    and cron jobs.  Use --channel / --to to override.
     """
+    # Auto-detect
+    auto_channel, auto_to = _detect_delivery_channel()
+    if not channel:
+        channel = auto_channel
     if not to:
-        print("Error: --to is required (e.g. qqbot:c2c:<hex-id>)")
+        to = auto_to
+
+    if not to:
+        print("Error: could not auto-detect delivery target.")
+        print("  Use --to to specify it manually, e.g.:")
+        print(f"  python -m plan_tracker.cli webhook-setup --to qqbot:c2c:<your-id>")
         sys.exit(1)
 
     script_path = Path(__file__).resolve().parent.parent / "scripts" / "webhook_receiver.py"
     pkg_path = _detect_plan_tracker_path()
     log_dir = str(Path.home() / "mcp-servers" / "plan-tracker" / "data")
+
+    # Write delivery config for the receiver to read
+    delivery_config = {"channel": channel, "to": to}
+    if not dry_run:
+        from plan_tracker.storage import DATA_DIR
+        config_file = DATA_DIR / "webhook_delivery.json"
+        config_file.write_text(json.dumps(delivery_config, ensure_ascii=False, indent=2))
 
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -285,6 +345,8 @@ def cmd_webhook_setup(port: int = 9876, to: str = "", dry_run: bool = False) -> 
         <string>{script_path}</string>
         <string>--port</string>
         <string>{port}</string>
+        <string>--channel</string>
+        <string>{channel}</string>
         <string>--to</string>
         <string>{to}</string>
     </array>
@@ -314,11 +376,16 @@ def cmd_webhook_setup(port: int = 9876, to: str = "", dry_run: bool = False) -> 
 
     print(f"✓ Webhook receiver installed and started")
     print(f"  Listen: http://127.0.0.1:{port}")
+    print(f"  Channel: {channel}")
+    print(f"  Target: {to}")
     print(f"  Status: launchctl list | grep {_webhook_launchd_label()}")
+    print()
+    print(f"  Delivery config saved to data/webhook_delivery.json")
+    print(f"  Edit that file to change channel/target, then restart:")
+    print(f"    launchctl unload {_webhook_plist_path()} && launchctl load {_webhook_plist_path()}")
     print()
     print(f"  Next: configure your plan to use webhook channel:")
     print(f"    In Claude/OpenClaw, call: webhook_configure <plan> url=http://127.0.0.1:{port}")
-    print(f"  Or update notification_channels to include 'webhook'")
 
 
 def cmd_cron_setup(
@@ -637,8 +704,12 @@ def main() -> None:
         help="Webhook receiver port (default: 9876)",
     )
     webhook_parser.add_argument(
-        "--to", required=True,
-        help="Delivery target, e.g. qqbot:c2c:<hex-id>",
+        "--channel", default="",
+        help="Delivery channel (auto-detected from OpenClaw config if not set)",
+    )
+    webhook_parser.add_argument(
+        "--to", default="",
+        help="Delivery target (auto-detected from cron jobs if not set)",
     )
     webhook_parser.add_argument(
         "--dry-run", action="store_true",
@@ -679,7 +750,7 @@ def main() -> None:
             job_id=args.job_id,
         )
     elif args.command == "webhook-setup":
-        cmd_webhook_setup(port=args.port, to=args.to, dry_run=args.dry_run)
+        cmd_webhook_setup(port=args.port, to=args.to, channel=args.channel, dry_run=args.dry_run)
     else:
         parser.print_help()
 
