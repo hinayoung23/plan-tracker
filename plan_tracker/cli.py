@@ -238,6 +238,83 @@ def _validate_qq_id(qq_id: str) -> str | None:
     return None
 
 
+def _webhook_launchd_label() -> str:
+    return "com.plan-tracker.webhook-receiver"
+
+
+def _webhook_plist_path() -> Path:
+    return _LAUNCHD_PLIST_DIR / f"{_webhook_launchd_label()}.plist"
+
+
+def cmd_webhook_setup(port: int = 9876, dry_run: bool = False) -> None:
+    """Install the webhook receiver as a launchd service for real-time delivery.
+
+    The webhook receiver listens on localhost:<port> and runs
+    ``plan-tracker.cli deliver`` whenever the daemon POSTs a notification.
+    This eliminates the need for a polling cron job — notifications are
+    delivered within milliseconds of being generated.
+    """
+    script_path = Path(__file__).resolve().parent.parent / "scripts" / "webhook_receiver.py"
+    pkg_path = _detect_plan_tracker_path()
+    log_dir = str(Path.home() / "mcp-servers" / "plan-tracker" / "data")
+
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{_webhook_launchd_label()}</string>
+    <key>Comment</key>
+    <string>Plan Tracker webhook receiver — real-time notification delivery</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ExitTimeOut</key>
+    <integer>5</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{sys.executable}</string>
+        <string>{script_path}</string>
+        <string>--port</string>
+        <string>{port}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>{pkg_path}</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>{pkg_path}</string>
+    <key>StandardOutPath</key>
+    <string>{log_dir}/webhook-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{log_dir}/webhook-stderr.log</string>
+</dict>
+</plist>"""
+
+    if dry_run:
+        print(f"\nWould write launchd plist to {_webhook_plist_path()}:")
+        print(plist_content)
+        return
+
+    _LAUNCHD_PLIST_DIR.mkdir(parents=True, exist_ok=True)
+    _webhook_plist_path().write_text(plist_content)
+    os.system(f"launchctl unload {_webhook_plist_path()} 2>/dev/null")
+    os.system(f"launchctl load {_webhook_plist_path()}")
+
+    print(f"✓ Webhook receiver installed and started")
+    print(f"  Listen: http://127.0.0.1:{port}")
+    print(f"  Status: launchctl list | grep {_webhook_launchd_label()}")
+    print()
+    print(f"  Next: configure your plan to use webhook channel:")
+    print(f"    In Claude/OpenClaw, call: webhook_configure <plan> url=http://127.0.0.1:{port}")
+    print(f"  Or update notification_channels to include 'webhook'")
+
+
 def cmd_cron_setup(
     qq_id: str = "",
     interval_minutes: int = 5,
@@ -544,6 +621,20 @@ def main() -> None:
         help=f"Cron job identifier (default: {_DEFAULT_CRON_JOB_ID})",
     )
 
+    # webhook-setup
+    webhook_parser = sub.add_parser(
+        "webhook-setup",
+        help="Install webhook receiver for real-time notification delivery",
+    )
+    webhook_parser.add_argument(
+        "--port", type=int, default=9876,
+        help="Webhook receiver port (default: 9876)",
+    )
+    webhook_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview changes without writing anything",
+    )
+
     args = parser.parse_args()
 
     if args.command == "setup":
@@ -577,6 +668,8 @@ def main() -> None:
             dry_run=args.dry_run,
             job_id=args.job_id,
         )
+    elif args.command == "webhook-setup":
+        cmd_webhook_setup(port=args.port, dry_run=args.dry_run)
     else:
         parser.print_help()
 

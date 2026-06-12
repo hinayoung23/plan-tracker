@@ -313,6 +313,27 @@ async def email_configure(plan_name: str, config: dict) -> str:
 
 
 @mcp.tool()
+async def webhook_configure(plan_name: str, config: dict) -> str:
+    """Configure webhook notifications for real-time push delivery. config: url (required)."""
+    from plan_tracker.storage import load_plan, save_plan
+
+    plan = load_plan(plan_name)
+    if plan is None:
+        return _json_response({"success": False, "error": f"Plan '{plan_name}' not found"})
+
+    webhook = plan.setdefault("reminders", {}).setdefault("webhook", {})
+    if "url" in config:
+        webhook["url"] = config["url"]
+
+    channels = plan["reminders"].setdefault("notification_channels", ["mcp"])
+    if "webhook" not in channels:
+        channels.append("webhook")
+
+    save_plan(plan_name, plan)
+    return _json_response({"success": True, "webhook": webhook})
+
+
+@mcp.tool()
 async def reminder_check_now() -> str:
     """Manually trigger an immediate check for upcoming/overdue milestones."""
     reminder.check_now()

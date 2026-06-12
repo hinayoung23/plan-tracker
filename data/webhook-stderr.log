@@ -1,0 +1,3 @@
+2026-06-12 15:35:09,828 [webhook-receiver] INFO: Webhook receiver listening on http://127.0.0.1:9876
+2026-06-12 15:35:42,839 [webhook-receiver] INFO: Webhook received: type=stale plan=大模型学习计划
+2026-06-12 15:35:43,116 [webhook-receiver] INFO: Delivered 95 chars of notification text

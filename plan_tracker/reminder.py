@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plan_tracker.storage import INDEX_FILE, DATA_DIR, load_plan, load_index
-from plan_tracker.notification import EmailChannel
+from plan_tracker.notification import EmailChannel, WebhookChannel
 from plan_tracker.notification_queue import enqueue as enqueue_notification
 from plan_tracker.daily_tracker import (
     get_today_state,
@@ -321,6 +321,21 @@ class ReminderEngine:
                     ecfg = plan.get("reminders", {}).get("email", {})
                     if ecfg.get("enabled"):
                         EmailChannel(ecfg).send(note, plan_name, mtitle, mid)
+                elif ch == "webhook":
+                    wcfg = plan.get("reminders", {}).get("webhook", {})
+                    if wcfg.get("url"):
+                        # Webhook delivery, fall back to queue if it fails
+                        ok = WebhookChannel(wcfg).send(note, plan_name, mtitle, mid)
+                        if not ok:
+                            # Fall back to notification queue
+                            enqueue_notification(
+                                plan_name=plan_name,
+                                ntype=ntype,
+                                message=note["message"],
+                                plan_title=plan_title,
+                                milestone_title=mtitle,
+                                milestone_id=mid,
+                            )
 
     # ── Daily check (used by _check_all on startup) ───────────────
 

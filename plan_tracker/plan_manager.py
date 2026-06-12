@@ -69,6 +69,9 @@ def create_plan(
                 "api_key": "plan-tracker-api-key",
                 "recipient": "",
             },
+            "webhook": {
+                "url": "",
+            },
         },
     }
 
