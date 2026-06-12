@@ -22,7 +22,7 @@
 - **定时提醒** — 基于事件调度，按时触发每日早晚提醒、过期/即将到期/停滞的里程碑检测
 - **每日提醒** — 早晚两次提醒：早晨进度提醒（默认 08:30）+ 晚间完成确认（默认 21:30），支持 10 分钟超时自动判定
 - **自动拉起** — MCP Server 启动时自动检查并拉起守护进程，附带 watchdog 线程守护存活
-- **通知投递** — 通过 CLI 拉取通知队列，配合任意定时任务即可投递到消息平台
+- **通知投递** — Webhook 实时推送 + 通知队列兜底，支持多平台（QQ/Telegram/Slack 等），无需轮询
 
 ### 环境要求
 
@@ -69,7 +69,7 @@ python -m plan_tracker.cli setup --dry-run
 1. ✅ 在 `~/.openclaw/openclaw.json` 中注册 MCP Server（自动检测 Python 路径）
 2. ✅ 启动守护进程（MCP Server 内置 watchdog 线程每 5 分钟检测存活，挂了自动拉起）
 
-> 通知投递由 agent 平台负责。如果你使用 OpenClaw，可运行 `python -m plan_tracker.cli cron-setup --help` 查看定时任务配置选项。
+> 通知投递推荐使用 Webhook 实时推送（`webhook-setup`），也支持队列轮询（`deliver` + cron）。
 
 安装后重启 OpenClaw 生效：
 ```bash
@@ -114,7 +114,8 @@ launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 | `reminder_configure` | 配置提醒参数（含每日提醒时间） |
 | `reminder_toggle` | 开启/关闭提醒 |
 | `reminder_check_now` | 手动触发一次检查 |
-| `email_configure` | 配置邮件通知 |
+| `webhook_configure` | 配置 Webhook 实时推送 |
+| `email_configure` | 配置邮件通知（HMAC-SHA256 签名） |
 
 ### 数据模型
 
@@ -165,15 +166,25 @@ python -m plan_tracker.cli daemon stop
 
 #### 通知投递
 
-守护进程将提醒写入 `data/notification_queue.json`。外部系统通过 CLI 拉取并投递给用户：
+**方式一：Webhook 实时推送（推荐）**
+
+```bash
+# 一键安装 webhook receiver，自动发现投递渠道
+python -m plan_tracker.cli webhook-setup
+
+# 手动指定渠道
+python -m plan_tracker.cli webhook-setup --channel qqbot --to qqbot:c2c:<id>
+```
+
+Daemon 生成通知后通过 Webhook POST 到本地 receiver，receiver 调用 `openclaw agent --deliver` 实时推送到消息平台，延迟 < 3 秒。通知同时写入队列作为兜底。
+
+**方式二：队列轮询**
 
 ```bash
 python -m plan_tracker.cli deliver
 ```
 
-`deliver` 命令原子地完成「打印通知内容 + 标记已投递」，配合 OpenClaw cron 即可实现自动通知投递。如果输出为空则无待投递通知。
-
-> 如果你使用 OpenClaw，可用 `python -m plan_tracker.cli cron-setup` 生成定时轮询配置，具体参数由你的 agent 平台决定。
+`deliver` 命令原子地取出并 ack 队列中的通知。可配合 OpenClaw cron 定时拉取。
 
 ### 提醒机制
 
@@ -241,7 +252,7 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 - **Daily Reminders** — Morning check-in (default 08:30) + evening review (default 21:30) with 10-min auto-timeout
 - **Milestone Reminders** — Event-scheduled engine fires reminders at exact configured times, with startup catch-up for missed reminders
 - **Auto-start Daemon** — MCP Server auto-starts the daemon on first use with a watchdog thread; CLI `--ack` also self-heals
-- **Notification delivery** — Atomic `deliver` command prints and acks notifications; pair with any scheduler to forward to your messaging platform
+- **Notification delivery** — Webhook real-time push + queue fallback; auto-detects delivery channel; supports QQ/Telegram/Slack etc.
 
 ### Requirements
 
@@ -288,7 +299,7 @@ python -m plan_tracker.cli setup --dry-run
 1. ✅ Registers the MCP server in `~/.openclaw/openclaw.json` (auto-detects Python path)
 2. ✅ Starts the daemon (MCP Server watchdog auto-revives it every 5 minutes)
 
-> Notification delivery is handled by your agent platform. If you use OpenClaw, run `python -m plan_tracker.cli cron-setup --help` for scheduling options.
+> Notification delivery: webhook real-time push is recommended (`webhook-setup`), with queue polling as fallback.
 
 Restart OpenClaw afterwards:
 ```bash
@@ -298,15 +309,25 @@ launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 
 #### Notification delivery
 
-The daemon writes notifications to `data/notification_queue.json`. External systems deliver them via:
+**Option 1: Webhook real-time push (recommended)**
+
+```bash
+# Auto-detect channel and install
+python -m plan_tracker.cli webhook-setup
+
+# Or specify channel manually
+python -m plan_tracker.cli webhook-setup --channel qqbot --to qqbot:c2c:<id>
+```
+
+The daemon POSTs notifications to a local webhook receiver, which delivers them instantly via `openclaw agent --deliver`. Notifications are also written to the queue as fallback.
+
+**Option 2: Queue polling**
 
 ```bash
 python -m plan_tracker.cli deliver
 ```
 
-The `deliver` command atomically prints pending notifications and marks them as delivered. Empty output means nothing to deliver. Set up a periodic task (e.g. cron) to run this command and forward output to the user.
-
-> If you use OpenClaw, `python -m plan_tracker.cli cron-setup` generates a ready-to-use scheduling config. The specific delivery parameters depend on your agent platform.
+Atomically fetches and acks pending notifications. Pair with a periodic task to forward output to the user.
 ```
 
 ### License
