@@ -32,3 +32,6 @@ data/daemon.log
 .idea/
 data/daemon-stderr.log
 data/daemon-stdout.log
+
+# Daemon log files
+data/*.log
