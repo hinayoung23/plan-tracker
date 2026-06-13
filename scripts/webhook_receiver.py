@@ -142,15 +142,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
         plan = data.get("plan_title", data.get("plan_name", "unknown"))
         logger.info("Webhook received: type=%s plan=%s", ntype, plan)
 
-        ok = fetch_and_deliver(self.channel, self.to)
-
-        self.send_response(200)
+        # Respond immediately so the daemon doesn't time out.
+        # Processing (deliver + openclaw agent) runs in background.
+        self.send_response(202)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps({
-            "status": "ok" if ok else "empty",
-            "delivered": ok,
-        }).encode())
+        self.wfile.write(json.dumps({"status": "accepted"}).encode())
+
+        # Background delivery
+        import threading
+        threading.Thread(
+            target=fetch_and_deliver,
+            args=(self.channel, self.to),
+            daemon=True,
+        ).start()
 
     def log_message(self, format, *args):
         logger.debug("%s - %s", self.client_address[0], format % args)

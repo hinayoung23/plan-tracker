@@ -65,7 +65,7 @@ class WebhookChannel(NotificationChannel):
                 method="POST",
             )
 
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 if 200 <= resp.status < 300:
                     logger.info("Webhook sent to %s: type=%s plan=%s",
                                 url, payload["type"], plan_name)
