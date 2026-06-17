@@ -4,6 +4,130 @@
 
 ---
 
+<a id="english"></a>
+## English
+
+### Overview
+
+**Plan Tracker** is an MCP (Model Context Protocol) server that gives AI assistants long-term plan management capabilities. It supports milestone tracking, progress check-ins, plan analysis, and scheduled reminders with **real-time webhook push delivery**.
+
+Whether it's a learning roadmap, project plan, fitness goal, or reading list, Plan Tracker helps break big goals into executable milestones and continuously tracks progress.
+
+### Features
+
+- **Plan CRUD** — Create, view, update, delete plans with categories (learning/project/fitness/reading/custom)
+- **Milestones** — Add and update milestones, view current and upcoming ones
+- **Check-ins** — Record progress percentage, time spent, notes, blockers, and morale for each milestone
+- **Analysis** — Progress deviation, pace ratio, remaining effort estimates, morale trends
+- **Daily Reminders** — Morning check-in (default 08:30) + evening review (default 21:30) with 10-min auto-timeout
+- **Milestone Reminders** — Event-scheduled engine fires reminders at exact configured times, with startup catch-up for missed reminders
+- **Auto-start Daemon** — MCP Server auto-starts the daemon on first use with a watchdog thread
+- **Notification delivery** — Webhook real-time push + queue fallback; auto-detects delivery channel; supports QQ/Telegram/Slack etc.
+
+### Requirements
+
+- Python >= 3.12
+- MCP >= 1.0.0
+
+### Installation
+
+#### Option 1: OpenClaw Plugin Marketplace (recommended)
+
+```bash
+openclaw plugins install clawhub:plan-tracker
+bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
+```
+
+#### Option 2: pip
+
+```bash
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.5.3/plan_tracker-1.5.3-py3-none-any.whl
+```
+
+### Setup
+
+```bash
+# One command to register MCP server + start daemon
+python -m plan_tracker.cli setup
+```
+
+`setup` automates:
+1. ✅ Registers the MCP server in `~/.openclaw/openclaw.json` (auto-detects Python path)
+2. ✅ Starts the daemon (MCP Server watchdog auto-revives it)
+
+> Notification delivery: webhook real-time push is recommended (`webhook-setup`), with queue polling as fallback.
+
+Restart OpenClaw afterwards:
+```bash
+launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+```
+
+### Notification Delivery
+
+**Option 1: Webhook real-time push (recommended)**
+
+```bash
+# Auto-detect channel and install
+python -m plan_tracker.cli webhook-setup
+
+# Or specify channel manually
+python -m plan_tracker.cli webhook-setup --channel qqbot --to qqbot:c2c:<id>
+```
+
+The daemon POSTs notifications to a local webhook receiver, which delivers them instantly via `openclaw agent --deliver`. Notifications are also written to the queue as fallback.
+
+**Option 2: Queue polling**
+
+```bash
+python -m plan_tracker.cli deliver
+```
+
+Atomically fetches and acks pending notifications.
+
+### Available Tools
+
+| Category | Tool | Description |
+|----------|------|-------------|
+| Plan | `plan_create` / `plan_get` / `plan_list` / `plan_update` / `plan_delete` | Plan CRUD |
+| Plan | `plan_analysis` | Progress statistics and trends |
+| Milestone | `milestone_add` / `milestone_update` / `milestone_current` / `milestone_upcoming` | Milestone management |
+| Check-in | `checkin_add` | Record a progress check-in |
+| Daily | `daily_confirm` / `daily_status` | Daily plan confirmation |
+| Reminder | `reminder_configure` / `reminder_toggle` / `reminder_check_now` | Reminder config |
+| Notification | `webhook_configure` / `email_configure` | Delivery channel setup |
+
+### Project Structure
+
+```
+plan-tracker/
+├── plan_tracker/
+│   ├── server.py              # FastMCP server (18 tools)
+│   ├── daemon.py              # Standalone daemon (double-fork)
+│   ├── reminder.py            # Scheduled reminder engine
+│   ├── plan_manager.py        # Plan CRUD + analysis
+│   ├── milestone_manager.py   # Milestone + check-in logic
+│   ├── daily_tracker.py       # Daily state (reminders/timeout/archive)
+│   ├── storage.py             # JSON file storage
+│   ├── notification_queue.py  # Notification producer-consumer queue
+│   ├── cli.py                 # CLI (setup, webhook, deliver, cron)
+│   └── notification/          # Delivery channels
+│       ├── webhook_channel.py # Webhook push (real-time)
+│       ├── email_channel.py   # Email via HMAC-SHA256
+│       └── mcp_channel.py     # MCP protocol (queue)
+├── scripts/
+│   ├── webhook_receiver.py    # HTTP server for webhook delivery
+│   └── setup.sh               # One-command install
+├── skill/SKILL.md             # AI skill definition
+└── data/                      # Runtime data (gitignored)
+```
+
+### License
+
+MIT
+
+---
+
 <a id="chinese"></a>
 ## 中文
 
@@ -45,7 +169,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.4.4/plan_tracker-1.4.4-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.5.3/plan_tracker-1.5.3-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
@@ -144,17 +268,13 @@ Checkin
 └── morale          (struggling | neutral | good | great)
 ```
 
-### 部署（首次使用）
+### 部署
 
 Plan Tracker 的提醒功能通过**独立守护进程**运行，支持自动拉起，无需手动管理：
 
 #### MCP Server 自动拉起
 
 当 AI 助手首次调用 plan-tracker MCP 工具时，`server.py` 会自动检查并启动守护进程，同时启动 watchdog 线程每 5 分钟检测守护进程存活状态，挂了自动拉起。
-
-```bash
-# 无需手动操作 —— MCP Server 启动时自动完成
-```
 
 #### 手动管理
 
@@ -184,8 +304,6 @@ Daemon 生成通知后通过 Webhook POST 到本地 receiver，receiver 调用 `
 python -m plan_tracker.cli deliver
 ```
 
-`deliver` 命令原子地取出并 ack 队列中的通知。可配合 OpenClaw cron 定时拉取。
-
 ### 提醒机制
 
 #### 每日提醒
@@ -193,7 +311,6 @@ python -m plan_tracker.cli deliver
 - **晚间完成确认**（默认 21:30）— 确认当天计划完成情况（已完成/部分完成/未完成）
 - **10 分钟超时** — 晚间确认发出后 10 分钟内未回复，自动标记为未完成
 - **补确认归档** — 超时后的补确认将归档到第二天的计划记录中
-- 两种提醒的触发时间均可在 `reminder_configure` 中自定义
 
 #### 里程碑提醒
 - 基于事件调度，每天在早晨提醒时间触发一次里程碑检查
@@ -208,126 +325,25 @@ python -m plan_tracker.cli deliver
 
 ```
 plan-tracker/
-├── daemon.py              # 独立守护进程（提醒引擎常驻运行）
-├── server.py              # FastMCP 工具服务入口
-├── cli.py                 # 命令行管理工具
-├── notification_queue.py  # 通知队列（daemon 写，外部系统读）
-├── plan_manager.py        # Plan CRUD + 分析
-├── milestone_manager.py   # 里程碑 + 打卡操作
-├── daily_tracker.py       # 每日状态管理（提醒/确认/超时/归档）
-├── storage.py             # JSON 文件存储
-├── reminder.py            # 提醒引擎逻辑
-├── notification/
-│   ├── __init__.py
-│   ├── base.py            # 通知通道基类
-│   ├── mcp_channel.py     # MCP 通道通知
-│   └── email_channel.py   # 邮件通知
-├── skill/
-│   └── SKILL.md           # AI Skill 定义
-├── data/                  # 计划数据（gitignore）
-└── pyproject.toml
-```
-
-### License
-
-MIT
-
----
-
-<a id="english"></a>
-## English
-
-### Overview
-
-**Plan Tracker** is an MCP (Model Context Protocol) server that gives AI assistants long-term plan management capabilities. It supports milestone tracking, progress check-ins, plan analysis, and scheduled reminders.
-
-Whether it's a learning roadmap, project plan, fitness goal, or reading list, Plan Tracker helps break big goals into executable milestones and continuously tracks progress.
-
-### Features
-
-- **Plan CRUD** — Create, view, update, delete plans with categories (learning/project/fitness/reading/custom)
-- **Milestones** — Add and update milestones, view current and upcoming ones
-- **Check-ins** — Record progress percentage, time spent, notes, blockers, and morale for each milestone
-- **Analysis** — Progress deviation, pace ratio, remaining effort estimates, morale trends
-- **Daily Reminders** — Morning check-in (default 08:30) + evening review (default 21:30) with 10-min auto-timeout
-- **Milestone Reminders** — Event-scheduled engine fires reminders at exact configured times, with startup catch-up for missed reminders
-- **Auto-start Daemon** — MCP Server auto-starts the daemon on first use with a watchdog thread; CLI `--ack` also self-heals
-- **Notification delivery** — Webhook real-time push + queue fallback; auto-detects delivery channel; supports QQ/Telegram/Slack etc.
-
-### Requirements
-
-- Python >= 3.12
-- MCP >= 1.0.0
-
-### Installation
-
-#### Option 1: OpenClaw Plugin Marketplace (recommended)
-
-```bash
-# Install from local path (cloned repository)
-openclaw plugins install ./plan-tracker
-
-# Install Python dependencies + initial setup
-bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
-```
-
-#### Option 2: PyPI / pip
-
-```bash
-# From GitHub Releases
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v1.4.4/plan_tracker-1.4.4-py3-none-any.whl
-
-# Or from source
-git clone https://github.com/hinayoung23/plan-tracker.git
-cd plan-tracker
-pip install -e .
-```
-
-### Setup
-
-Run `setup` to register the MCP server and start the daemon:
-
-```bash
-# One command to configure plan-tracker
-python -m plan_tracker.cli setup
-
-# Preview changes without writing
-python -m plan_tracker.cli setup --dry-run
-```
-
-`setup` automates:
-1. ✅ Registers the MCP server in `~/.openclaw/openclaw.json` (auto-detects Python path)
-2. ✅ Starts the daemon (MCP Server watchdog auto-revives it every 5 minutes)
-
-> Notification delivery: webhook real-time push is recommended (`webhook-setup`), with queue polling as fallback.
-
-Restart OpenClaw afterwards:
-```bash
-launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
-launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
-```
-
-#### Notification delivery
-
-**Option 1: Webhook real-time push (recommended)**
-
-```bash
-# Auto-detect channel and install
-python -m plan_tracker.cli webhook-setup
-
-# Or specify channel manually
-python -m plan_tracker.cli webhook-setup --channel qqbot --to qqbot:c2c:<id>
-```
-
-The daemon POSTs notifications to a local webhook receiver, which delivers them instantly via `openclaw agent --deliver`. Notifications are also written to the queue as fallback.
-
-**Option 2: Queue polling**
-
-```bash
-python -m plan_tracker.cli deliver
-```
-
-Atomically fetches and acks pending notifications. Pair with a periodic task to forward output to the user.
+├── plan_tracker/
+│   ├── server.py              # FastMCP 工具服务入口
+│   ├── daemon.py              # 独立守护进程（提醒引擎常驻运行）
+│   ├── reminder.py            # 事件调度提醒引擎
+│   ├── plan_manager.py        # Plan CRUD + 分析
+│   ├── milestone_manager.py   # 里程碑 + 打卡操作
+│   ├── daily_tracker.py       # 每日状态管理（提醒/确认/超时/归档）
+│   ├── storage.py             # JSON 文件存储
+│   ├── notification_queue.py  # 通知队列（daemon 写，外部系统读）
+│   ├── cli.py                 # 命令行管理工具
+│   └── notification/          # 通知通道
+│       ├── webhook_channel.py # Webhook 实时推送
+│       ├── email_channel.py   # 邮件通知（HMAC-SHA256）
+│       └── mcp_channel.py     # MCP 通道通知
+├── scripts/
+│   ├── webhook_receiver.py    # Webhook 接收端 HTTP 服务
+│   └── setup.sh               # 一键安装脚本
+├── skill/SKILL.md             # AI Skill 定义
+└── data/                      # 运行时数据（gitignore）
 ```
 
 ### License
