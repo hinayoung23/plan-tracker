@@ -8,16 +8,36 @@ VALID_STATUSES = ("pending", "in_progress", "completed", "blocked")
 VALID_MORALE = ("struggling", "neutral", "good", "great")
 
 
-def add_milestone(plan_name: str, milestone: dict) -> dict:
-    """Add a new milestone to a plan."""
+def add_milestone(plan_name: str, milestone: dict,
+                  after_milestone_id: str | None = None) -> dict:
+    """Add a new milestone to a plan.
+
+    If after_milestone_id is provided, the new milestone is inserted
+    immediately after that milestone; otherwise it is appended to the end.
+    """
     plan = load_plan(plan_name)
     if plan is None:
         raise ValueError(f"Plan '{plan_name}' not found")
 
     milestones = plan.setdefault("milestones", [])
-    next_order = len(milestones) + 1
-    milestone["id"] = f"ms-{next_order:03d}"
-    milestone.setdefault("order", next_order)
+
+    # Determine insert position
+    insert_at = len(milestones)  # default: append
+    if after_milestone_id:
+        found = False
+        for i, m in enumerate(milestones):
+            if m["id"] == after_milestone_id:
+                insert_at = i + 1
+                found = True
+                break
+        if not found:
+            raise ValueError(
+                f"Milestone '{after_milestone_id}' not found in plan '{plan_name}'"
+            )
+
+    # Build milestone with defaults
+    milestone["id"] = ""  # placeholder, renumbered below
+    milestone.setdefault("order", 0)
     milestone.setdefault("status", "pending")
     milestone.setdefault("description", "")
     milestone.setdefault("actual_date", None)
@@ -30,10 +50,18 @@ def add_milestone(plan_name: str, milestone: dict) -> dict:
     if milestone["status"] not in VALID_STATUSES:
         raise ValueError(f"Invalid status: {milestone['status']}")
 
-    milestones.append(milestone)
+    milestones.insert(insert_at, milestone)
+    _renumber_milestones(milestones)
     save_plan(plan_name, plan)
     update_index_entry(plan_name, plan)
     return milestone
+
+
+def _renumber_milestones(milestones: list[dict]) -> None:
+    """Re-assign id and order for all milestones based on list position."""
+    for i, m in enumerate(milestones):
+        m["order"] = i + 1
+        m["id"] = f"ms-{i + 1:03d}"
 
 
 def update_milestone(plan_name: str, milestone_id: str, updates: dict) -> dict:

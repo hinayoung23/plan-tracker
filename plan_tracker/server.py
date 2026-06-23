@@ -123,10 +123,14 @@ async def plan_analysis(plan_name: str) -> str:
 # ── Milestone tools ──
 
 @mcp.tool()
-async def milestone_add(plan_name: str, milestone: dict) -> str:
-    """Add a milestone to a plan. milestone keys: title, target_date, effort_hours_estimate (required); description, status (optional)."""
+async def milestone_add(plan_name: str, milestone: dict,
+                        after_milestone_id: str = "") -> str:
+    """Add a milestone to a plan. milestone keys: title, target_date, effort_hours_estimate (required); description, status (optional). Use after_milestone_id to insert after a specific milestone instead of appending to the end."""
     try:
-        result = add_milestone(plan_name, milestone)
+        # Support passing after_milestone_id either as explicit param or inside milestone dict
+        position = after_milestone_id or milestone.pop("after_milestone_id", "") or None
+        result = add_milestone(plan_name, milestone,
+                               after_milestone_id=position)
         return _json_response({"success": True, "milestone": result})
     except ValueError as e:
         return _json_response({"success": False, "error": str(e)})
