@@ -97,6 +97,19 @@ Atomically fetches and acks pending notifications.
 | Reminder | `reminder_configure` / `reminder_toggle` / `reminder_check_now` | Reminder config |
 | Notification | `webhook_configure` / `email_configure` | Delivery channel setup |
 
+### Example: Track an X/Twitter Launch Plan
+
+Plan Tracker can keep an OpenClaw social launch workflow on schedule while a
+specialized plugin such as [TweetClaw](https://github.com/Xquik-dev/tweetclaw)
+handles approved X/Twitter research, monitoring, or posting tasks.
+
+Suggested milestones:
+
+1. Define the target queries, accounts, approval owner, and reporting cadence.
+2. Configure TweetClaw monitors or exports in OpenClaw after approval.
+3. Check in daily with signal counts, blockers, and next actions.
+4. Review the final report and close any follow-up posting or webhook tasks.
+
 ### Project Structure
 
 ```

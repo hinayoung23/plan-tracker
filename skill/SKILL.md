@@ -235,6 +235,29 @@ User: "帮我看看计划是否合理"
 4. Ask: "要应用这些建议吗？"
 ```
 
+### Workflow 6: Track an X/Twitter Launch
+
+```
+User: "Track our launch monitoring plan with TweetClaw"
+
+1. Gather the launch goal, X/Twitter queries or accounts, approval owner,
+   reporting cadence, and target end date.
+
+2. Create a project plan with milestones:
+   - Define source scope and success metrics
+   - Configure approved TweetClaw monitors or exports in OpenClaw
+   - Review daily signal counts, blockers, and next actions
+   - Produce the final report and close follow-up posting tasks
+
+3. For each check-in, record:
+   - Monitor or export status
+   - New risks or blockers
+   - Approval state for any posting, reply, DM, webhook, or follow-up action
+
+4. If the user asks to post, reply, send DMs, change monitors, or alter webhooks,
+   confirm the exact approved action before marking that milestone complete.
+```
+
 ---
 
 ## Adjustment Heuristics
