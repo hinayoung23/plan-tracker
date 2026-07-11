@@ -118,7 +118,19 @@ def record_confirmation(
     now_utc = datetime.now(timezone.utc)
     now_iso = now_utc.isoformat()
 
-    # Check if this is a late confirmation (after timeout)
+    # Read the plan's configured timeout (default 10 minutes)
+    timeout_minutes = 10
+    try:
+        from plan_tracker.storage import load_plan
+        plan = load_plan(plan_name)
+        if plan:
+            timeout_minutes = plan.get("reminders", {}).get(
+                "confirmation_timeout_minutes", 10
+            )
+    except Exception:
+        pass
+
+    # Check if this is a late confirmation (after configured timeout)
     review_reminded_at = entry.get("review_reminded_at")
     is_archived = False
     archive_target_date = None
@@ -129,9 +141,7 @@ def record_confirmation(
                 tzinfo=timezone.utc
             )
             elapsed_minutes = (now_utc - reminded_dt).total_seconds() / 60
-            # If more than 10 minutes passed since evening reminder, archive to next day
-            # We read timeout from plan config later, use a reasonable default here
-            if elapsed_minutes > 10:
+            if elapsed_minutes > timeout_minutes:
                 is_archived = True
                 # Archive to the next LOCAL day (not UTC)
                 from datetime import timedelta
@@ -227,6 +237,73 @@ def auto_mark_incomplete(plan_name: str) -> dict | None:
         "completion_status": "incomplete",
         "auto_marked": True,
     }
+
+
+def catch_up_past_timeouts(plan_name: str, timeout_minutes: int = 10) -> list[dict]:
+    """Auto-mark past days that have unconfirmed reviews.
+
+    When the daemon restarts, this catches up on days where the evening
+    review was sent but no confirmation (manual or auto) was recorded.
+    Returns a list of auto-marked results (empty if nothing to do).
+    """
+    state = _load_state()
+    plan_state = state.get(plan_name, {})
+    now_utc = datetime.now(timezone.utc)
+    results = []
+
+    # Only look back 7 days to avoid re-processing ancient history
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    today = _today_str()
+
+    for date_str in sorted(plan_state.keys()):
+        if date_str >= today:
+            continue  # Skip today — handled by normal timeout check
+        if date_str < cutoff:
+            continue  # Too old
+
+        entry = plan_state[date_str]
+        # Already confirmed (manually or auto-marked) — skip
+        if entry.get("confirmed"):
+            continue
+        # No review was sent — skip
+        if not entry.get("review_reminded"):
+            continue
+        # Try to check if enough time has passed
+        review_reminded_at = entry.get("review_reminded_at")
+        if not review_reminded_at:
+            continue
+        try:
+            reminded_dt = datetime.fromisoformat(review_reminded_at).replace(
+                tzinfo=timezone.utc
+            )
+            elapsed_minutes = (now_utc - reminded_dt).total_seconds() / 60
+            if elapsed_minutes >= timeout_minutes:
+                entry["confirmed"] = True
+                entry["confirmed_at"] = now_utc.isoformat()
+                entry["completion_status"] = "incomplete"
+                entry["completion_notes"] = (
+                    f"[自动判定·补检] {date_str} 晚间确认超时未响应，自动标记为未完成"
+                )
+                entry["auto_marked"] = True
+                results.append({
+                    "plan_name": plan_name,
+                    "date": date_str,
+                    "completion_status": "incomplete",
+                    "auto_marked": True,
+                    "catch_up": True,
+                })
+        except (ValueError, TypeError):
+            continue
+
+    if results:
+        _save_state(state)
+        logger.info(
+            "Catch-up: auto-marked %d past unconfirmed day(s) for %s",
+            len(results), plan_name,
+        )
+
+    return results
 
 
 def get_archived_for_date(plan_name: str, date_str: str) -> dict | None:

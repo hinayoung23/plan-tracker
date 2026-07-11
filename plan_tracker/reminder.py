@@ -25,12 +25,27 @@ from plan_tracker.daily_tracker import (
     check_review_timeout,
     auto_mark_incomplete,
     get_archived_for_date,
+    catch_up_past_timeouts,
 )
 
 logger = logging.getLogger("plan_tracker.reminder")
 
 NOTIFICATION_COOLDOWN_HOURS = 12
 STATE_FILE = DATA_DIR / ".reminder_state.json"
+
+
+def check_now() -> None:
+    """Module-level helper: run a one-shot check of all plans.
+
+    Creates a temporary ReminderEngine that runs _check_all and
+    immediately stops.  Safe to call from the MCP server process
+    without interfering with the running daemon.
+    """
+    engine = ReminderEngine()
+    try:
+        engine._check_all()
+    finally:
+        engine.stop()
 
 
 def _local_now() -> datetime:
@@ -62,10 +77,14 @@ class ReminderEngine:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        # Clean up delivered notifications on startup
+        self._cleanup_notification_queue()
         # Catch up on any reminders missed while the daemon was down
         self._check_all()
         # Schedule future events at exact configured times
         self._schedule_all_events()
+        # Schedule daily notification queue cleanup
+        self._schedule_event("03:00", self._fire_queue_cleanup, "__system__")
         self._thread = threading.Thread(
             target=self._scheduler.run, daemon=True, name="plan-tracker-reminder",
         )
@@ -138,16 +157,24 @@ class ReminderEngine:
             return
         reminders = plan.get("reminders", {})
 
-        today_state = get_today_state(plan_name)
-        if not today_state.get("checkin_reminded"):
-            record_checkin_reminded(plan_name)
-            milestone = _get_active_milestone(plan)
-            archived = get_archived_for_date(plan_name, _today_str())
-            entry = _plan_index_entry(plan_name)
-            if entry:
-                self._dispatch([
-                    _build_daily_checkin(entry, plan, milestone, archived),
-                ])
+        # Cooldown check: don't send duplicate checkins within cooldown window
+        cooldown_key = f"{plan_name}:daily_checkin"
+        state = _load_state()
+        if not _should_notify(state, cooldown_key, "daily_checkin"):
+            logger.debug("Skipping daily checkin for %s — within cooldown", plan_name)
+        else:
+            today_state = get_today_state(plan_name)
+            if not today_state.get("checkin_reminded"):
+                record_checkin_reminded(plan_name)
+                milestone = _get_active_milestone(plan)
+                archived = get_archived_for_date(plan_name, _today_str())
+                entry = _plan_index_entry(plan_name)
+                if entry:
+                    self._dispatch([
+                        _build_daily_checkin(entry, plan, milestone, archived),
+                    ])
+                    state[cooldown_key] = {"type": "daily_checkin", "time": _utc_now_iso()}
+                    _save_state(state)
 
         # Reschedule for tomorrow
         if reminders.get("daily_checkin_enabled", True):
@@ -161,16 +188,24 @@ class ReminderEngine:
             return
         reminders = plan.get("reminders", {})
 
-        today_state = get_today_state(plan_name)
-        if not today_state.get("review_reminded"):
-            record_review_reminded(plan_name)
-            milestone = _get_active_milestone(plan)
-            timeout = reminders.get("confirmation_timeout_minutes", 10)
-            entry = _plan_index_entry(plan_name)
-            if entry:
-                self._dispatch([
-                    _build_daily_review(entry, plan, milestone, timeout),
-                ])
+        # Cooldown check: don't send duplicate reviews within cooldown window
+        cooldown_key = f"{plan_name}:daily_review"
+        state = _load_state()
+        if not _should_notify(state, cooldown_key, "daily_review"):
+            logger.debug("Skipping daily review for %s — within cooldown", plan_name)
+        else:
+            today_state = get_today_state(plan_name)
+            if not today_state.get("review_reminded"):
+                record_review_reminded(plan_name)
+                milestone = _get_active_milestone(plan)
+                timeout = reminders.get("confirmation_timeout_minutes", 10)
+                entry = _plan_index_entry(plan_name)
+                if entry:
+                    self._dispatch([
+                        _build_daily_review(entry, plan, milestone, timeout),
+                    ])
+                    state[cooldown_key] = {"type": "daily_review", "time": _utc_now_iso()}
+                    _save_state(state)
 
         # Reschedule for tomorrow
         if reminders.get("daily_review_enabled", True):
@@ -241,6 +276,22 @@ class ReminderEngine:
 
         if notifications:
             self._dispatch(notifications)
+
+    def _cleanup_notification_queue(self) -> None:
+        """Remove delivered notifications from the queue file."""
+        try:
+            from plan_tracker.notification_queue import clear_all
+            removed = clear_all()
+            if removed > 0:
+                logger.info("Cleaned up %d delivered notification(s)", removed)
+        except Exception:
+            logger.debug("Notification queue cleanup skipped", exc_info=True)
+
+    def _fire_queue_cleanup(self, _plan_name: str) -> None:
+        """Periodic callback to purge delivered notifications."""
+        self._cleanup_notification_queue()
+        # Reschedule for tomorrow
+        self._schedule_event("03:00", self._fire_queue_cleanup, "__system__")
 
     def _check_milestones_for_plan(self, plan_name: str) -> None:
         """Check milestones for a single plan and dispatch any notifications."""
@@ -340,14 +391,28 @@ class ReminderEngine:
     # ── Daily check (used by _check_all on startup) ───────────────
 
     def _check_daily(self, entry: dict, plan: dict) -> list[dict]:
-        """Check and trigger daily check-in / review reminders for one plan."""
+        """Check and trigger daily check-in / review reminders for one plan.
+
+        Only fires when the current time is within the configured window AND
+        the cooldown period has passed (prevents duplicates on daemon restart).
+        """
         reminders = plan.get("reminders", {})
         notifications = []
         now = _local_now()
+        state = _load_state()
+
+        # Catch up on past unconfirmed reviews (daemon was down)
+        timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
+        past_results = catch_up_past_timeouts(entry["name"], timeout_minutes)
+        for result in past_results:
+            if _should_notify(state, f"{entry['name']}:daily_timeout", "daily_timeout"):
+                notifications.append(_build_daily_timeout(entry, plan))
+                _save_state_after_timeout(entry["name"], "daily_timeout")
 
         if reminders.get("daily_checkin_enabled", True):
             chk_time = reminders.get("daily_checkin_time", "08:30")
-            if _in_time_window(now, chk_time):
+            cooldown_key = f"{entry['name']}:daily_checkin"
+            if _in_time_window(now, chk_time) and _should_notify(state, cooldown_key, "daily_checkin"):
                 today_state = get_today_state(entry["name"])
                 if not today_state.get("checkin_reminded"):
                     record_checkin_reminded(entry["name"])
@@ -356,10 +421,12 @@ class ReminderEngine:
                     notifications.append(
                         _build_daily_checkin(entry, plan, milestone, archived)
                     )
+                    state[cooldown_key] = {"type": "daily_checkin", "time": _utc_now_iso()}
 
         if reminders.get("daily_review_enabled", True):
             rev_time = reminders.get("daily_review_time", "21:30")
-            if _in_time_window(now, rev_time):
+            cooldown_key = f"{entry['name']}:daily_review"
+            if _in_time_window(now, rev_time) and _should_notify(state, cooldown_key, "daily_review"):
                 today_state = get_today_state(entry["name"])
                 if not today_state.get("review_reminded"):
                     record_review_reminded(entry["name"])
@@ -368,6 +435,10 @@ class ReminderEngine:
                     notifications.append(
                         _build_daily_review(entry, plan, milestone, timeout)
                     )
+                    state[cooldown_key] = {"type": "daily_review", "time": _utc_now_iso()}
+
+        if state:
+            _save_state(state)
 
         timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
         if check_review_timeout(entry["name"], timeout_minutes):

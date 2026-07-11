@@ -7,6 +7,7 @@ On startup, ensures the plan-tracker daemon is running and monitors
 its health, restarting it automatically if it dies.
 """
 
+import fcntl
 import json
 import logging
 import subprocess
@@ -33,11 +34,13 @@ from plan_tracker.milestone_manager import (
     get_upcoming_milestones,
 )
 from plan_tracker.notification_queue import fetch_all, mark_delivered
+from plan_tracker.reminder import check_now as reminder_check_now_impl
 from plan_tracker.daily_tracker import (
     get_today_state,
     record_confirmation,
     check_review_timeout,
     auto_mark_incomplete,
+    catch_up_past_timeouts,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -343,7 +346,7 @@ async def webhook_configure(plan_name: str, config: dict) -> str:
 @mcp.tool()
 async def reminder_check_now() -> str:
     """Manually trigger an immediate check for upcoming/overdue milestones."""
-    reminder.check_now()
+    reminder_check_now_impl()
     return _json_response({"success": True, "message": "Check completed."})
 
 
@@ -376,13 +379,17 @@ async def notification_ack(notification_ids: list[str]) -> str:
 _DAEMON_WATCHDOG_INTERVAL = 300  # 5 minutes
 # Max wait time for daemon PID file to appear after launching
 _DAEMON_START_TIMEOUT = 10
+# Lock file to prevent concurrent daemon starts
+_DAEMON_LOCK_FILE = Path(__file__).resolve().parent.parent / "data" / "daemon.lock"
 
 
 def _ensure_daemon() -> bool:
     """Start the plan-tracker daemon if it is not already running.
 
-    Returns True if the daemon was already running or was started
-    successfully; False if the daemon could not be started.
+    Uses a file lock to prevent concurrent attempts from spawning
+    multiple daemon instances.  Returns True if the daemon was
+    already running or was started successfully; False if the
+    daemon could not be started.
     """
     from plan_tracker.daemon import is_running, read_pid
 
@@ -390,8 +397,31 @@ def _ensure_daemon() -> bool:
         logger.debug("Daemon already running (PID: %d)", read_pid())
         return True
 
-    logger.info("Daemon not running — starting...")
+    # Acquire an exclusive lock so only one caller tries to start
+    _DAEMON_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = None
     try:
+        lock_fd = open(_DAEMON_LOCK_FILE, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        # Another caller is already starting the daemon — wait for it
+        logger.debug("Another process is starting the daemon, waiting...")
+        deadline = time.monotonic() + _DAEMON_START_TIMEOUT + 5
+        while time.monotonic() < deadline:
+            if is_running():
+                logger.info("Daemon started by another process (PID: %d)", read_pid())
+                return True
+            time.sleep(0.5)
+        logger.warning("Timed out waiting for another process to start daemon")
+        return False
+
+    try:
+        # Double-check after acquiring lock
+        if is_running():
+            logger.debug("Daemon already running (PID: %d) — started after lock wait", read_pid())
+            return True
+
+        logger.info("Daemon not running — starting...")
         daemon_script = Path(__file__).resolve().parent / "daemon.py"
         proc = subprocess.Popen(
             [sys.executable, str(daemon_script), "--daemon"],
@@ -416,6 +446,13 @@ def _ensure_daemon() -> bool:
     except Exception:
         logger.exception("Failed to start daemon")
         return False
+    finally:
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+            except OSError:
+                pass
 
 
 def _daemon_watchdog() -> None:

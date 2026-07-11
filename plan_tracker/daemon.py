@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -22,11 +23,20 @@ from plan_tracker.storage import DATA_DIR
 PID_FILE = DATA_DIR / "daemon.pid"
 LOG_FILE = DATA_DIR / "daemon.log"
 
+# Rotate after ~1 MB, keep 3 backups (~4 MB total max)
+_LOG_MAX_BYTES = 1_048_576
+_LOG_BACKUP_COUNT = 3
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
-        logging.FileHandler(LOG_FILE),
+        logging.handlers.RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=_LOG_MAX_BYTES,
+            backupCount=_LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        ),
         logging.StreamHandler(sys.stderr),
     ],
 )
@@ -97,8 +107,13 @@ def run_foreground() -> None:
     logger.info("Plan Tracker daemon started (PID: %d)", os.getpid())
 
     engine = ReminderEngine()
+    _shutting_down = False
 
     def _shutdown(signum, frame):
+        nonlocal _shutting_down
+        if _shutting_down:
+            return  # Already shutting down — avoid double-stop
+        _shutting_down = True
         logger.info("Received signal %d, shutting down...", signum)
         engine.stop()
         remove_pid()
@@ -116,9 +131,10 @@ def run_foreground() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        engine.stop()
-        remove_pid()
-        logger.info("Plan Tracker daemon stopped")
+        if not _shutting_down:
+            engine.stop()
+            remove_pid()
+            logger.info("Plan Tracker daemon stopped")
 
 
 def run_daemon() -> None:
@@ -132,8 +148,13 @@ def run_daemon() -> None:
     logger.info("Plan Tracker daemon started in background (PID: %d)", os.getpid())
 
     engine = ReminderEngine()
+    _shutting_down = False
 
     def _shutdown(signum, frame):
+        nonlocal _shutting_down
+        if _shutting_down:
+            return  # Already shutting down — avoid double-stop
+        _shutting_down = True
         engine.stop()
         remove_pid()
         sys.exit(0)
@@ -148,8 +169,9 @@ def run_daemon() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        engine.stop()
-        remove_pid()
+        if not _shutting_down:
+            engine.stop()
+            remove_pid()
 
 
 def main() -> None:
