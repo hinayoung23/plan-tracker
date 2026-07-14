@@ -62,7 +62,7 @@ def create_plan(
             "daily_checkin_enabled": True,
             "daily_review_enabled": True,
             "confirmation_timeout_minutes": 10,
-            "notification_channels": ["mcp"],
+            "notification_channels": ["mcp", "webhook"],
             "email": {
                 "enabled": False,
                 "api_url": "https://mail.tempbox.cn/api/send-email",
@@ -71,7 +71,7 @@ def create_plan(
                 "recipient": "",
             },
             "webhook": {
-                "url": "",
+                "url": "http://127.0.0.1:9876",
             },
         },
     }

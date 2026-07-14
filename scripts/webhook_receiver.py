@@ -5,6 +5,11 @@ Receives POST requests from the plan-tracker daemon's WebhookChannel,
 runs ``plan-tracker.cli deliver`` to atomically fetch and ack pending
 notifications, then delivers them to the user via ``openclaw agent``.
 
+Smart polling: when a webhook POST wakes the receiver, a background
+poller checks the notification queue with exponential backoff.  If the
+queue stays empty through the full backoff cycle the poller goes dormant,
+eliminating unnecessary polling when there are no notifications.
+
 Usage:
   python scripts/webhook_receiver.py [--host 127.0.0.1] [--port 9876]
                                      [--channel qqbot]
@@ -18,6 +23,8 @@ import json
 import logging
 import subprocess
 import sys
+import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -49,6 +56,12 @@ if _OPENCLAW_BIN is None:
         _OPENCLAW_BIN = _found
 
 
+# ── Exponential backoff sequence (seconds) ─────────────────────────
+# After each empty poll the backoff doubles.  When the last level
+# returns empty the poller goes dormant until the next webhook POST.
+_BACKOFF_SEQUENCE = [30, 60, 120, 240, 480, 600]
+
+
 def _load_delivery_config() -> dict:
     """Load delivery config from disk, with CLI-arg overrides."""
     if _DELIVERY_CONFIG.exists():
@@ -62,15 +75,12 @@ def _load_delivery_config() -> dict:
 # ── Delivery ────────────────────────────────────────────────────
 
 
-def fetch_and_deliver(channel: str, to: str) -> bool:
-    """Run the deliver command, then push output to the user.
+def _deliver_pending(channel: str, to: str) -> bool:
+    """Run ``plan-tracker.cli deliver`` and relay output to the user.
 
-    1. ``plan-tracker.cli deliver`` — atomically fetch + ack pending
-    2. If output is non-empty, relay it via ``openclaw agent --deliver``
-
-    Returns True if a notification was delivered.
+    Returns True if at least one notification was delivered.
     """
-    # Step 1: fetch + ack
+    # Step 1: atomically fetch + ack pending notifications
     try:
         result = subprocess.run(
             [_PYTHON, "-m", "plan_tracker.cli", "deliver"],
@@ -88,6 +98,10 @@ def fetch_and_deliver(channel: str, to: str) -> bool:
     logger.info("Fetched %d chars of notification text", len(text))
 
     # Step 2: push to user via openclaw agent relay
+    if _OPENCLAW_BIN is None:
+        logger.error("openclaw binary not found — cannot deliver")
+        return False
+
     relay_prompt = (
         "你的唯一任务是将以下内容原样发送给用户。"
         "不要添加任何问候、解释、建议或额外内容。"
@@ -122,12 +136,109 @@ def fetch_and_deliver(channel: str, to: str) -> bool:
         return False
 
 
+# ── Smart Poller ─────────────────────────────────────────────────
+
+
+class SmartPoller:
+    """Event-driven poller with exponential backoff and auto-sleep.
+
+    Lifecycle
+    ---------
+    1. **Dormant** — no thread running, zero resource usage.
+    2. **Wake-up** — ``wakeup()`` is called (by a webhook POST).
+       The poller starts a background thread that immediately checks
+       the queue.
+    3. **Backoff** — after each empty poll the wait interval doubles
+       (30 s → 60 s → 120 s → 240 s → 480 s → 600 s).  A non-empty
+       poll resets the backoff to the start.
+    4. **Dormant again** — when the queue has been empty through the
+       full backoff cycle the poller stops its thread and returns to
+       step 1, waiting for the next webhook POST.
+    """
+
+    def __init__(self, channel: str, to: str):
+        self._channel = channel
+        self._to = to
+        self._wakeup = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._running = False
+
+    # ── public API ──────────────────────────────────────────────
+
+    def wakeup(self) -> None:
+        """Signal that a notification may be available.
+
+        Safe to call from any thread.  Restarts the poller if it was
+        dormant.
+        """
+        self._wakeup.set()
+        self._ensure_running()
+
+    # ── internals ───────────────────────────────────────────────
+
+    def _ensure_running(self) -> None:
+        """Start the poller thread if it isn't already alive."""
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._running = True
+            self._wakeup.clear()
+            self._thread = threading.Thread(
+                target=self._poll_loop,
+                daemon=True,
+                name="plan-tracker-smart-poller",
+            )
+            self._thread.start()
+            logger.info("Smart poller started (backoff: %s)",
+                        " → ".join(f"{s}s" for s in _BACKOFF_SEQUENCE))
+
+    def _poll_loop(self) -> None:
+        """Background thread: poll with exponential backoff, stop when idle."""
+        backoff_idx = 0
+        empty_streak = 0
+
+        while self._running:
+            # ── Check queue now ─────────────────────────────────
+            delivered = _deliver_pending(self._channel, self._to)
+
+            if delivered:
+                backoff_idx = 0
+                empty_streak = 0
+                logger.debug("Smart poller: delivered, backoff reset")
+            else:
+                empty_streak += 1
+                if backoff_idx < len(_BACKOFF_SEQUENCE) - 1:
+                    backoff_idx += 1
+                logger.debug("Smart poller: empty streak=%d, backoff_idx=%d",
+                             empty_streak, backoff_idx)
+
+            # ── Stop condition ──────────────────────────────────
+            # Go dormant when we've reached max backoff AND had at
+            # least one empty poll at that level.
+            if backoff_idx >= len(_BACKOFF_SEQUENCE) - 1 and empty_streak >= 1:
+                logger.info(
+                    "Smart poller: queue empty through full backoff cycle "
+                    "(max %ds) — going dormant", _BACKOFF_SEQUENCE[-1]
+                )
+                self._running = False
+                break
+
+            # ── Wait (interruptible by wakeup) ──────────────────
+            timeout = _BACKOFF_SEQUENCE[backoff_idx]
+            self._wakeup.wait(timeout=timeout)
+            self._wakeup.clear()
+
+        logger.info("Smart poller stopped (dormant)")
+
+
 # ── HTTP server ──────────────────────────────────────────────────
 
 
 class WebhookHandler(BaseHTTPRequestHandler):
     channel: str = "qqbot"
     to: str = ""
+    poller: SmartPoller | None = None
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
@@ -142,20 +253,22 @@ class WebhookHandler(BaseHTTPRequestHandler):
         plan = data.get("plan_title", data.get("plan_name", "unknown"))
         logger.info("Webhook received: type=%s plan=%s", ntype, plan)
 
-        # Respond immediately so the daemon doesn't time out.
-        # Processing (deliver + openclaw agent) runs in background.
+        # Respond immediately so the daemon doesn't time out
         self.send_response(202)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps({"status": "accepted"}).encode())
 
-        # Background delivery
-        import threading
+        # ── Fast path: immediate background delivery ────────────
         threading.Thread(
-            target=fetch_and_deliver,
+            target=_deliver_pending,
             args=(self.channel, self.to),
             daemon=True,
         ).start()
+
+        # ── Fallback: wake the smart poller ─────────────────────
+        if self.poller is not None:
+            self.poller.wakeup()
 
     def log_message(self, format, *args):
         logger.debug("%s - %s", self.client_address[0], format % args)
@@ -183,13 +296,23 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    # Inject config into handler class
+    # ── Wire up handler + poller ────────────────────────────────
     WebhookHandler.channel = channel
     WebhookHandler.to = to
+    WebhookHandler.poller = SmartPoller(channel, to)
+
+    # Also do an initial queue drain in case notifications piled up
+    # while the receiver was down (e.g. Gateway restart).
+    logger.info("Running initial queue drain...")
+    if _deliver_pending(channel, to):
+        # Queue wasn't empty — start the poller for follow-up checks
+        WebhookHandler.poller.wakeup()
+    else:
+        logger.info("Initial queue drain: nothing pending")
 
     server = HTTPServer((args.host, args.port), WebhookHandler)
     logger.info("Webhook receiver listening on http://%s:%d", args.host, args.port)
-    logger.info("Delivery: %s → %s", args.channel, args.to)
+    logger.info("Delivery: %s → %s", channel, to)
 
     try:
         server.serve_forever()
