@@ -39,21 +39,41 @@ _PYTHON = sys.executable
 _DELIVERY_CONFIG = _PKG_DIR / "data" / "webhook_delivery.json"
 
 # Resolve the openclaw binary (not the shell function)
-_OPENCLAW_BIN = None
-for _candidate in (
-    "/Users/wzl/.nvm/versions/node/v25.8.0/bin/openclaw",
-    "/opt/homebrew/bin/openclaw",
-    "/usr/local/bin/openclaw",
-):
-    if Path(_candidate).exists():
-        _OPENCLAW_BIN = _candidate
-        break
-
-if _OPENCLAW_BIN is None:
+def _resolve_openclaw_bin() -> str | None:
+    """Find the openclaw binary, trying nvm current version first."""
     import shutil as _shutil
+
+    # 1. Try the currently active nvm Node.js version
+    _nvm_current = Path.home() / ".nvm" / "versions" / "node"
+    if _nvm_current.is_dir():
+        try:
+            _versions = sorted(
+                [d for d in _nvm_current.iterdir() if d.is_dir()],
+                reverse=True,  # newest first
+            )
+            for _v in _versions:
+                _candidate = _v / "bin" / "openclaw"
+                if _candidate.exists():
+                    return str(_candidate)
+        except OSError:
+            pass
+
+    # 2. Fall back to common install locations
+    for _candidate in (
+        "/opt/homebrew/bin/openclaw",
+        "/usr/local/bin/openclaw",
+    ):
+        if Path(_candidate).exists():
+            return _candidate
+
+    # 3. Search PATH
     _found = _shutil.which("openclaw")
     if _found:
-        _OPENCLAW_BIN = _found
+        return _found
+
+    return None
+
+_OPENCLAW_BIN = _resolve_openclaw_bin()
 
 
 # ── Exponential backoff sequence (seconds) ─────────────────────────
@@ -122,7 +142,7 @@ def _deliver_pending(channel: str, to: str) -> bool:
             ],
             capture_output=True, text=True, timeout=45,
             env={**__import__("os").environ,
-                 "PATH": "/Users/wzl/.nvm/versions/node/v25.8.0/bin:" + __import__("os").environ.get("PATH", "")},
+                 "PATH": f"{Path(_OPENCLAW_BIN).parent}:{__import__('os').environ.get('PATH', '')}"},
         )
         if agent_result.returncode == 0:
             logger.info("Delivered to %s via %s", to, channel)
