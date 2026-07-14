@@ -35,3 +35,5 @@ data/daemon-stdout.log
 
 # Daemon log files
 data/*.log
+data/*.log.*
+data/daemon.lock
