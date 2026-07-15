@@ -148,7 +148,7 @@ def get_plan_analysis(plan_name: str) -> dict:
         raise ValueError(f"Plan '{plan_name}' not found")
 
     milestones = plan.get("milestones", [])
-    now = datetime.now()  # local time for date comparisons
+    now = datetime.now(timezone.utc)
 
     total_est = sum(m.get("effort_hours_estimate", 0) for m in milestones)
     total_actual = sum(
@@ -182,7 +182,7 @@ def get_plan_analysis(plan_name: str) -> dict:
     days_elapsed = 0
     if target:
         try:
-            target_date = datetime.fromisoformat(target)
+            target_date = datetime.fromisoformat(target).replace(tzinfo=timezone.utc)
             created = datetime.fromisoformat(plan["created_at"])
             days_total = max((target_date - created).days, 1)
             days_remaining = max((target_date - now).days, 0)
