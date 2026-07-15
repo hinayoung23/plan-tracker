@@ -321,3 +321,50 @@ def get_archived_for_date(plan_name: str, date_str: str) -> dict | None:
             **archived,
         }
     return None
+
+
+def auto_confirm_from_checkin(plan_name: str, progress_pct: int = 0) -> bool:
+    """Auto-confirm the evening review when a check-in is recorded during the
+    confirmation window.
+
+    Called by ``add_checkin`` after a check-in is successfully written.
+    If today's evening review has been sent but not yet confirmed, this
+    marks it as confirmed so the daemon does not send a spurious
+    "incomplete" timeout notification.
+
+    Returns True if an auto-confirmation was performed, False otherwise.
+    """
+    today = _today_str()
+    state = _load_state()
+    entry = state.get(plan_name, {}).get(today, {})
+
+    # Only act when: review was sent AND user has not confirmed yet
+    if not entry.get("review_reminded"):
+        return False
+    if entry.get("confirmed"):
+        return False
+
+    # Map progress to a completion status
+    if progress_pct >= 100:
+        completion_status = "completed"
+    elif progress_pct > 0:
+        completion_status = "partial"
+    else:
+        # Zero progress is still engagement — the user took time to check in
+        completion_status = "partial"
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    notes = "[自动确认] 用户在对话中通过 check-in 更新了进度"
+
+    entry["confirmed"] = True
+    entry["confirmed_at"] = now_iso
+    entry["completion_status"] = completion_status
+    entry["completion_notes"] = notes
+    entry["auto_confirmed_from_checkin"] = True
+    _save_state(state)
+
+    logger.info(
+        "Auto-confirmed review for %s via check-in (status=%s, progress=%d%%)",
+        plan_name, completion_status, progress_pct,
+    )
+    return True

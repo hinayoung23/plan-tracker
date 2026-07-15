@@ -137,6 +137,13 @@ def add_checkin(
 
     save_plan(plan_name, plan)
     update_index_entry(plan_name, plan)
+
+    # Auto-confirm today's evening review if we are inside the
+    # confirmation window — prevents spurious "incomplete" timeout
+    # notifications when the user has already checked in via the agent.
+    from plan_tracker.daily_tracker import auto_confirm_from_checkin
+    auto_confirm_from_checkin(plan_name, progress_pct)
+
     return milestone
 
 
