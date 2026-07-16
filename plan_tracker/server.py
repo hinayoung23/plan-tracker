@@ -422,12 +422,14 @@ def _ensure_daemon() -> bool:
             return True
 
         logger.info("Daemon not running — starting...")
-        daemon_script = Path(__file__).resolve().parent / "daemon.py"
+        pkg_path = str(Path(__file__).resolve().parent.parent)
+        env = {**os.environ, "PYTHONPATH": pkg_path}
         proc = subprocess.Popen(
-            [sys.executable, str(daemon_script), "--daemon"],
+            [sys.executable, "-m", "plan_tracker.daemon", "--daemon"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
+            env=env,
         )
         proc.wait(timeout=5)
 

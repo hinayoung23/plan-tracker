@@ -409,11 +409,11 @@ def cmd_daemon_start() -> None:
         return
 
     import subprocess
-    daemon_script = Path(__file__).resolve().parent / "daemon.py"
+    env = {**os.environ, "PYTHONPATH": _detect_plan_tracker_path()}
     proc = subprocess.Popen(
-        [sys.executable, str(daemon_script), "--daemon"],
+        [sys.executable, "-m", "plan_tracker.daemon", "--daemon"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, env=env,
     )
     proc.wait(timeout=3)
     if is_running():
