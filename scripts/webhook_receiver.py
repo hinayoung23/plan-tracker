@@ -279,14 +279,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"status": "accepted"}).encode())
 
-        # ── Fast path: immediate background delivery ────────────
-        threading.Thread(
-            target=_deliver_pending,
-            args=(self.channel, self.to),
-            daemon=True,
-        ).start()
-
-        # ── Fallback: wake the smart poller ─────────────────────
+        # Wake the SmartPoller — its first check is immediate (before
+        # any backoff sleep), giving sub-second delivery latency.
+        # We intentionally do NOT spawn a separate immediate-delivery
+        # thread here; doing so races with the SmartPoller's first
+        # check and produces duplicate QQ messages.
         if self.poller is not None:
             self.poller.wakeup()
 
