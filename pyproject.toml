@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "plan-tracker"
-version = "1.6.1"
+version = "1.6.2"
 description = "MCP Server for long-term plan tracking with milestone management, daily reminders, and standalone daemon"
 readme = "README.md"
 license = { text = "MIT" }

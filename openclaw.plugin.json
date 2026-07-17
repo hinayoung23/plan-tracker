@@ -2,7 +2,7 @@
   "id": "plan-tracker",
   "name": "Plan Tracker",
   "description": "Long-term plan tracking with milestones, check-ins, progress analysis, webhook push notifications, and event-scheduled reminders. MCP server for AI assistants.",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "activation": {
     "onStartup": false
   },

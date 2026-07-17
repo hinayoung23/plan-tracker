@@ -7,11 +7,13 @@ that were missed while the daemon was down.
 Notifications are dispatched through configured channels.
 """
 
+import fcntl
 import json
 import logging
 import sched
 import threading
 import time as _time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,6 +34,37 @@ logger = logging.getLogger("plan_tracker.reminder")
 
 NOTIFICATION_COOLDOWN_HOURS = 12
 STATE_FILE = DATA_DIR / ".reminder_state.json"
+
+
+@contextmanager
+def _locked_state():
+    """Context manager that provides exclusive access to the cooldown state.
+
+    Acquires fcntl.flock(LOCK_EX) on STATE_FILE before yielding the
+    state dict, and writes + releases the lock on exit.  This makes
+    the load → check → modify → save cycle atomic, preventing race
+    conditions when multiple daemon processes or the ``_check_all``
+    startup path fire simultaneously.
+    """
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        f = open(STATE_FILE, "r+")
+    except FileNotFoundError:
+        f = open(STATE_FILE, "w+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.seek(0)
+        try:
+            state = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            state = {}
+        yield state
+        f.seek(0)
+        f.truncate()
+        json.dump(state, f, indent=2)
+    finally:
+        fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
 
 
 def check_now() -> None:
@@ -157,12 +190,18 @@ class ReminderEngine:
             return
         reminders = plan.get("reminders", {})
 
-        # Cooldown check: don't send duplicate checkins within cooldown window
+        # Atomic cooldown check — prevents duplicate notifications when
+        # multiple trigger paths (daemon + cron / startup catch-up) race.
         cooldown_key = f"{plan_name}:daily_checkin"
-        state = _load_state()
-        if not _should_notify(state, cooldown_key, "daily_checkin"):
-            logger.debug("Skipping daily checkin for %s — within cooldown", plan_name)
-        else:
+        with _locked_state() as state:
+            if not _should_notify(state, cooldown_key, "daily_checkin"):
+                logger.debug("Skipping daily checkin for %s — within cooldown", plan_name)
+            else:
+                # Release lock before slow I/O to avoid contention
+                state[cooldown_key] = {"type": "daily_checkin", "time": _utc_now_iso()}
+        # — lock released here; dispatch outside the lock ——————
+
+        if state.get(cooldown_key, {}).get("time"):
             today_state = get_today_state(plan_name)
             if not today_state.get("checkin_reminded"):
                 record_checkin_reminded(plan_name)
@@ -173,8 +212,6 @@ class ReminderEngine:
                     self._dispatch([
                         _build_daily_checkin(entry, plan, milestone, archived),
                     ])
-                    state[cooldown_key] = {"type": "daily_checkin", "time": _utc_now_iso()}
-                    _save_state(state)
 
         # Reschedule for tomorrow
         if reminders.get("daily_checkin_enabled", True):
@@ -188,12 +225,15 @@ class ReminderEngine:
             return
         reminders = plan.get("reminders", {})
 
-        # Cooldown check: don't send duplicate reviews within cooldown window
+        # Atomic cooldown check — see _fire_daily_checkin for rationale.
         cooldown_key = f"{plan_name}:daily_review"
-        state = _load_state()
-        if not _should_notify(state, cooldown_key, "daily_review"):
-            logger.debug("Skipping daily review for %s — within cooldown", plan_name)
-        else:
+        with _locked_state() as state:
+            if not _should_notify(state, cooldown_key, "daily_review"):
+                logger.debug("Skipping daily review for %s — within cooldown", plan_name)
+            else:
+                state[cooldown_key] = {"type": "daily_review", "time": _utc_now_iso()}
+
+        if state.get(cooldown_key, {}).get("time"):
             today_state = get_today_state(plan_name)
             if not today_state.get("review_reminded"):
                 record_review_reminded(plan_name)
@@ -204,8 +244,6 @@ class ReminderEngine:
                     self._dispatch([
                         _build_daily_review(entry, plan, milestone, timeout),
                     ])
-                    state[cooldown_key] = {"type": "daily_review", "time": _utc_now_iso()}
-                    _save_state(state)
 
         # Reschedule for tomorrow
         if reminders.get("daily_review_enabled", True):
@@ -228,14 +266,15 @@ class ReminderEngine:
 
         if check_review_timeout(plan_name, timeout_minutes):
             key = f"{plan_name}:daily_timeout"
-            state = _load_state()
-            if _should_notify(state, key, "daily_timeout"):
-                result = auto_mark_incomplete(plan_name)
-                if result:
-                    entry = _plan_index_entry(plan_name)
-                    if entry:
-                        self._dispatch([_build_daily_timeout(entry, plan)])
-                        _save_state_after_timeout(plan_name, "daily_timeout")
+            with _locked_state() as state:
+                if not _should_notify(state, key, "daily_timeout"):
+                    return
+                state[key] = {"type": "daily_timeout", "time": _utc_now_iso()}
+            result = auto_mark_incomplete(plan_name)
+            if result:
+                entry = _plan_index_entry(plan_name)
+                if entry:
+                    self._dispatch([_build_daily_timeout(entry, plan)])
 
     def _fire_milestone_check(self, plan_name: str) -> None:
         """Check all milestones for one plan (overdue/upcoming/stale/weekly), then reschedule."""
@@ -303,42 +342,40 @@ class ReminderEngine:
             return
 
         reminders = plan.get("reminders", {})
-        state = _load_state()
         before_days = reminders.get("before_due_days", 3)
         notifications = []
 
-        for m in plan.get("milestones", []):
-            if m["status"] in ("completed", "blocked"):
-                continue
-            target = m.get("target_date", "")
-            if not target:
-                continue
-            target_dt = _parse_date(target)
-            if target_dt is None:
-                continue
-            days_remaining = (target_dt - _local_now()).days
-            key = f"{entry['name']}:{m['id']}"
+        with _locked_state() as state:
+            for m in plan.get("milestones", []):
+                if m["status"] in ("completed", "blocked"):
+                    continue
+                target = m.get("target_date", "")
+                if not target:
+                    continue
+                target_dt = _parse_date(target)
+                if target_dt is None:
+                    continue
+                days_remaining = (target_dt - _local_now()).days
+                key = f"{entry['name']}:{m['id']}"
 
-            if days_remaining < 0:
-                if _should_notify(state, key, "overdue"):
-                    notifications.append(_build_overdue(m, entry, days_remaining))
-                    state[key] = {"type": "overdue", "time": _utc_now_iso()}
-            elif 0 <= days_remaining <= before_days:
-                if _should_notify(state, key, "upcoming"):
-                    notifications.append(_build_upcoming(m, entry, days_remaining))
-                    state[key] = {"type": "upcoming", "time": _utc_now_iso()}
-            if _is_stale(m) and _should_notify(state, key, "stale"):
-                notifications.append(_build_stale(m, entry))
-                state[key] = {"type": "stale", "time": _utc_now_iso()}
+                if days_remaining < 0:
+                    if _should_notify(state, key, "overdue"):
+                        notifications.append(_build_overdue(m, entry, days_remaining))
+                        state[key] = {"type": "overdue", "time": _utc_now_iso()}
+                elif 0 <= days_remaining <= before_days:
+                    if _should_notify(state, key, "upcoming"):
+                        notifications.append(_build_upcoming(m, entry, days_remaining))
+                        state[key] = {"type": "upcoming", "time": _utc_now_iso()}
+                if _is_stale(m) and _should_notify(state, key, "stale"):
+                    notifications.append(_build_stale(m, entry))
+                    state[key] = {"type": "stale", "time": _utc_now_iso()}
 
-        weekly_day = reminders.get("weekly_checkin_day", "")
-        if weekly_day and _is_today(weekly_day):
-            key = f"{entry['name']}:weekly"
-            if _should_notify(state, key, "weekly"):
-                notifications.append(_build_weekly(entry, plan))
-                state[key] = {"type": "weekly", "time": _utc_now_iso()}
-
-        _save_state(state)
+            weekly_day = reminders.get("weekly_checkin_day", "")
+            if weekly_day and _is_today(weekly_day):
+                key = f"{entry['name']}:weekly"
+                if _should_notify(state, key, "weekly"):
+                    notifications.append(_build_weekly(entry, plan))
+                    state[key] = {"type": "weekly", "time": _utc_now_iso()}
 
         if notifications:
             self._dispatch(notifications)
@@ -399,56 +436,66 @@ class ReminderEngine:
         reminders = plan.get("reminders", {})
         notifications = []
         now = _local_now()
-        state = _load_state()
 
         # Catch up on past unconfirmed reviews (daemon was down)
         timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
         past_results = catch_up_past_timeouts(entry["name"], timeout_minutes)
         for result in past_results:
-            if _should_notify(state, f"{entry['name']}:daily_timeout", "daily_timeout"):
-                notifications.append(_build_daily_timeout(entry, plan))
-                _save_state_after_timeout(entry["name"], "daily_timeout")
+            with _locked_state() as state:
+                key = f"{entry['name']}:daily_timeout"
+                if _should_notify(state, key, "daily_timeout"):
+                    state[key] = {"type": "daily_timeout", "time": _utc_now_iso()}
+            notifications.append(_build_daily_timeout(entry, plan))
 
+        # Atomic checkin cooldown: only one path wins the race
+        should_checkin = False
         if reminders.get("daily_checkin_enabled", True):
             chk_time = reminders.get("daily_checkin_time", "08:30")
-            cooldown_key = f"{entry['name']}:daily_checkin"
-            if _in_time_window(now, chk_time) and _should_notify(state, cooldown_key, "daily_checkin"):
-                today_state = get_today_state(entry["name"])
-                if not today_state.get("checkin_reminded"):
-                    record_checkin_reminded(entry["name"])
-                    milestone = _get_active_milestone(plan)
-                    archived = get_archived_for_date(entry["name"], _today_str())
-                    notifications.append(
-                        _build_daily_checkin(entry, plan, milestone, archived)
-                    )
-                    state[cooldown_key] = {"type": "daily_checkin", "time": _utc_now_iso()}
+            ck_key = f"{entry['name']}:daily_checkin"
+            if _in_time_window(now, chk_time):
+                with _locked_state() as state:
+                    if _should_notify(state, ck_key, "daily_checkin"):
+                        state[ck_key] = {"type": "daily_checkin", "time": _utc_now_iso()}
+                        should_checkin = True
+        if should_checkin:
+            today_state = get_today_state(entry["name"])
+            if not today_state.get("checkin_reminded"):
+                record_checkin_reminded(entry["name"])
+                milestone = _get_active_milestone(plan)
+                archived = get_archived_for_date(entry["name"], _today_str())
+                notifications.append(
+                    _build_daily_checkin(entry, plan, milestone, archived)
+                )
 
+        # Atomic review cooldown
+        should_review = False
         if reminders.get("daily_review_enabled", True):
             rev_time = reminders.get("daily_review_time", "21:30")
-            cooldown_key = f"{entry['name']}:daily_review"
-            if _in_time_window(now, rev_time) and _should_notify(state, cooldown_key, "daily_review"):
-                today_state = get_today_state(entry["name"])
-                if not today_state.get("review_reminded"):
-                    record_review_reminded(entry["name"])
-                    milestone = _get_active_milestone(plan)
-                    timeout = reminders.get("confirmation_timeout_minutes", 10)
-                    notifications.append(
-                        _build_daily_review(entry, plan, milestone, timeout)
-                    )
-                    state[cooldown_key] = {"type": "daily_review", "time": _utc_now_iso()}
+            rv_key = f"{entry['name']}:daily_review"
+            if _in_time_window(now, rev_time):
+                with _locked_state() as state:
+                    if _should_notify(state, rv_key, "daily_review"):
+                        state[rv_key] = {"type": "daily_review", "time": _utc_now_iso()}
+                        should_review = True
+        if should_review:
+            today_state = get_today_state(entry["name"])
+            if not today_state.get("review_reminded"):
+                record_review_reminded(entry["name"])
+                milestone = _get_active_milestone(plan)
+                timeout = reminders.get("confirmation_timeout_minutes", 10)
+                notifications.append(
+                    _build_daily_review(entry, plan, milestone, timeout)
+                )
 
-        if state:
-            _save_state(state)
-
-        timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
+        # Timeout notification (also atomic)
         if check_review_timeout(entry["name"], timeout_minutes):
             key = f"{entry['name']}:daily_timeout"
-            state = _load_state()
-            if _should_notify(state, key, "daily_timeout"):
-                result = auto_mark_incomplete(entry["name"])
-                if result:
-                    notifications.append(_build_daily_timeout(entry, plan))
-                    _save_state_after_timeout(entry["name"], "daily_timeout")
+            with _locked_state() as state:
+                if _should_notify(state, key, "daily_timeout"):
+                    state[key] = {"type": "daily_timeout", "time": _utc_now_iso()}
+            result = auto_mark_incomplete(entry["name"])
+            if result:
+                notifications.append(_build_daily_timeout(entry, plan))
 
         return notifications
 
