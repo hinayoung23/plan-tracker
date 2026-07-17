@@ -1,6 +1,6 @@
 """JSON file storage for plan-tracker data.
 
-All data lives under ~/mcp-servers/plan-tracker/data/.
+All data lives under ~/mcp-servers/plan-tracker/data/ by default.
 """
 
 import json
@@ -9,7 +9,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+def _resolve_data_dir() -> Path:
+    """Resolve the data directory across install methods.
+
+    1. PLAN_TRACKER_DATA_DIR env var (explicit override)
+    2. ``<project-root>/data/`` (source / editable install — PYTHONPATH set)
+    3. ``~/mcp-servers/plan-tracker/data/`` (wheel / site-packages install)
+    """
+    env_dir = os.environ.get("PLAN_TRACKER_DATA_DIR")
+    if env_dir:
+        return Path(env_dir)
+
+    # Source install: data/ is a sibling of the plan_tracker/ package
+    computed = Path(__file__).resolve().parent.parent / "data"
+    if computed.is_dir():
+        return computed
+
+    # Wheel / site-packages install: use well-known absolute path
+    return Path.home() / "mcp-servers" / "plan-tracker" / "data"
+
+
+DATA_DIR = _resolve_data_dir()
 INDEX_FILE = DATA_DIR / "plan-index.json"
 
 
