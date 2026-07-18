@@ -99,12 +99,7 @@ def create_plan(
 
 def _init_milestones(raw: list[dict]) -> list[dict]:
     """Validate and initialize milestone list with defaults."""
-    # Check for duplicate IDs
-    explicit_ids = [m.get("id") for m in raw if m.get("id")]
-    if len(explicit_ids) != len(set(explicit_ids)):
-        raise ValueError("Duplicate milestone IDs are not allowed")
-
-    result = []
+    # Validate basic fields first
     for i, m in enumerate(raw):
         if not m.get("title"):
             raise ValueError(f"Milestone {i+1} must have a title")
@@ -113,16 +108,27 @@ def _init_milestones(raw: list[dict]) -> list[dict]:
         effort = m.get("effort_hours_estimate", 0)
         if not isinstance(effort, (int, float)) or effort < 0:
             raise ValueError(f"Milestone '{m['title']}' effort_hours_estimate must be >= 0")
-        if "id" not in m:
-            m["id"] = f"ms-{i + 1:03d}"
+        if m.get("status", "pending") not in VALID_STATUSES:
+            raise ValueError(f"Invalid milestone status: {m.get('status')}")
+
+    # Assign IDs, checking for collisions between auto-generated and explicit
+    all_ids = set()
+    result = []
+    for i, m in enumerate(raw):
+        if "id" in m:
+            mid = m["id"]
+        else:
+            mid = f"ms-{i + 1:03d}"
+            m["id"] = mid
+        if mid in all_ids:
+            raise ValueError(f"Duplicate milestone ID '{mid}' is not allowed")
+        all_ids.add(mid)
         m.setdefault("status", "pending")
-        if m["status"] not in VALID_STATUSES:
-            raise ValueError(f"Invalid milestone status: {m['status']}")
         m.setdefault("order", i + 1)
         m.setdefault("description", "")
         m.setdefault("actual_date", None)
         m.setdefault("completion_pct", 0)
-        m.setdefault("effort_hours_estimate", int(effort))
+        m.setdefault("effort_hours_estimate", int(m.get("effort_hours_estimate", 0)))
         m.setdefault("effort_hours_actual", None)
         m.setdefault("notes", "")
         m.setdefault("checkins", [])

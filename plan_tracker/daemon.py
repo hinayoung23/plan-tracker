@@ -107,8 +107,10 @@ def is_running() -> bool:
         remove_pid()
         return False
     except PermissionError:
-        # Process exists but we can't signal it — assume running
-        return True
+        # Process exists but we can't signal it — still verify via ps.
+        # Don't delete the PID file; we don't own the process but it
+        # might be our daemon running under a different user.
+        return _verify_daemon_process(pid)
 
 
 def _kill_any_daemon() -> int:
