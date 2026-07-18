@@ -171,15 +171,19 @@ def _deliver_pending(channel: str, to: str) -> bool:
     except Exception:
         logger.exception("openclaw message send failed")
 
-    # Step 3: ack only on success
+    # Step 3: ack only on success; verify ack command succeeded
     if delivered and ids:
         try:
-            subprocess.run(
+            ack_result = subprocess.run(
                 [_PYTHON, "-m", "plan_tracker.cli", "notification", "ack"] + ids,
                 capture_output=True, text=True, timeout=10,
                 cwd=str(_PKG_DIR),
             )
-            logger.info("Acked %d notification(s)", len(ids))
+            if ack_result.returncode == 0:
+                logger.info("Acked %d notification(s)", len(ids))
+            else:
+                logger.error("ack failed (rc=%d): %s — notifs will be re-delivered",
+                            ack_result.returncode, ack_result.stderr.strip())
         except Exception:
             logger.exception("ack command failed — notifications will be re-delivered")
 

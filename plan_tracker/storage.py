@@ -141,6 +141,9 @@ def modify_plan(plan_name: str, modifier_fn) -> dict | None:
     It must NOT return the dict (return value is ignored).
     The plan is saved automatically after the function returns.
     Returns the final plan dict.
+
+    Note: callers should use *modify_plan_and_index* instead to
+    ensure the plan index stays in sync with the plan body.
     """
     validate_plan_name(plan_name)
     _ensure_data_dir()
@@ -154,7 +157,16 @@ def modify_plan(plan_name: str, modifier_fn) -> dict | None:
             return dict(current)
     except FileNotFoundError:
         raise ValueError(f"Plan '{plan_name}' not found")
-        return dict(current)
+
+
+def modify_plan_and_index(plan_name: str, modifier_fn) -> dict:
+    """Like modify_plan, then immediately updates the plan index.
+
+    This minimizes the window where the plan body and index disagree.
+    """
+    plan = modify_plan(plan_name, modifier_fn)
+    update_index_entry(plan_name, plan)
+    return plan
 
 
 def delete_plan_file(plan_name: str) -> bool:

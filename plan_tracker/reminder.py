@@ -70,38 +70,38 @@ class ReminderEngine:
 
     def __init__(self):
         self._stop = threading.Event()
-        self._wake = threading.Event()  # For scheduler wake — separate from _stop
+        self._sleep_condition = threading.Condition()
+        self._wake_pending = False
         self._scheduler = sched.scheduler(_time.time, self._interruptible_sleep)
         self._thread = None
 
-    # ── Interruptible sleep (respects _stop) ──────────────────────
+    # ── Interruptible sleep ─────────────────────────────────────
+
+    def _signal_wake(self) -> None:
+        """Wake the scheduler immediately (Condition-based, zero-polling)."""
+        with self._sleep_condition:
+            self._wake_pending = True
+            self._sleep_condition.notify_all()
 
     def _interruptible_sleep(self, delay: float) -> None:
-        """Sleep that returns immediately on stop() or wake()."""
+        """Sleep with Condition: low-latency, zero-busy-polling.
+
+        Rechecks the clock at most every _CLOCK_RECHECK_SECONDS to
+        handle system sleep, NTP corrections, and DST transitions.
+        """
         if delay <= 0:
-            self._wake.clear()
             return
-        # For delays under 10s: poll _wake frequently for low-latency
-        if delay < 10.0:
-            deadline = _time.time() + delay
-            while _time.time() < deadline and not self._stop.is_set():
-                remaining = deadline - _time.time()
-                if remaining <= 0:
-                    break
-                self._stop.wait(min(remaining, 0.05))
-                if self._wake.is_set():
-                    break
-        else:
-            # Long delay: poll at 2s. Wake latency ≤2s, enough for
-            # a daily reminder daemon where scheduling precision isn't
-            # the bottleneck (the scheduler already targets minute
-            # granularity).
-            deadline = _time.time() + delay
-            while _time.time() < deadline and not self._stop.is_set():
-                self._stop.wait(min(deadline - _time.time(), 2.0))
-                if self._wake.is_set():
-                    break
-        self._wake.clear()
+        timeout = min(delay, _CLOCK_RECHECK_SECONDS)
+        with self._sleep_condition:
+            if self._wake_pending:
+                self._wake_pending = False
+                return
+            self._sleep_condition.wait_for(
+                lambda: self._stop.is_set() or self._wake_pending,
+                timeout=timeout,
+            )
+            if self._wake_pending:
+                self._wake_pending = False
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -132,7 +132,9 @@ class ReminderEngine:
         up new plans without a daemon restart.
         """
         while not self._stop.is_set():
-            self._stop.wait(60)
+            with self._sleep_condition:
+                self._sleep_condition.wait_for(
+                    lambda: self._stop.is_set(), timeout=60)
             if self._stop.is_set():
                 break
             try:
@@ -144,7 +146,9 @@ class ReminderEngine:
                 pass
 
     def stop(self):
-        self._stop.set()
+        with self._sleep_condition:
+            self._stop.set()
+            self._sleep_condition.notify_all()
         for event in list(self._scheduler.queue):
             self._scheduler.cancel(event)
         if self._thread:
@@ -188,7 +192,7 @@ class ReminderEngine:
             self._schedule_weekly_event(wtime, weekly_day, plan_name)
 
         was_stopped = self._stop.is_set()
-        self._wake.set()
+        self._signal_wake()
 
 
     def _schedule_catchup_timeouts(self) -> None:
@@ -307,7 +311,7 @@ class ReminderEngine:
         # Wake the scheduler — save and restore _stop to avoid
         # interfering with a genuine daemon shutdown in progress.
         was_stopped = self._stop.is_set()
-        self._wake.set()
+        self._signal_wake()
 
     def _schedule_event(self, time_str: str, callback, plan_name: str,
                         offset_minutes: int = 0) -> None:

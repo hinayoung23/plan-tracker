@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from plan_tracker.storage import load_plan, save_plan, modify_plan, update_index_entry, validate_plan_name
+from plan_tracker.storage import load_plan, save_plan, modify_plan_and_index, update_index_entry, validate_plan_name
 
 VALID_STATUSES = ("pending", "in_progress", "completed", "blocked")
 VALID_MORALE = ("struggling", "neutral", "good", "great")
@@ -65,8 +65,7 @@ def add_milestone(plan_name: str, milestone: dict,
             m["order"] = i + 1
         result[0] = new_ms
 
-    plan = modify_plan(plan_name, _add)
-    update_index_entry(plan_name, plan)
+    plan = modify_plan_and_index(plan_name, _add)
     return result[0]
 
 
@@ -108,8 +107,7 @@ def update_milestone(plan_name: str, milestone_id: str, updates: dict) -> dict:
 
         result[0] = ms
 
-    plan = modify_plan(plan_name, _update)
-    update_index_entry(plan_name, plan)
+    plan = modify_plan_and_index(plan_name, _update)
     return result[0]
 
 
@@ -165,7 +163,7 @@ def add_checkin(
             )
         result_milestone[0] = milestone
 
-    plan = modify_plan(plan_name, _do_checkin)
+    plan = modify_plan_and_index(plan_name, _do_checkin)
     update_index_entry(plan_name, plan)
     milestone = result_milestone[0]
 

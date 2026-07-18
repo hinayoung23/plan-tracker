@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from plan_tracker.storage import (
     load_plan,
     save_plan,
-    modify_plan,
+    modify_plan_and_index,
     delete_plan_file,
     update_index_entry,
     remove_index_entry,
@@ -117,6 +117,8 @@ def _init_milestones(raw: list[dict]) -> list[dict]:
     for i, m in enumerate(raw):
         if "id" in m:
             mid = m["id"]
+            if not isinstance(mid, str):
+                raise ValueError(f"Milestone ID must be a string, got {type(mid).__name__}: {mid!r}")
         else:
             mid = f"ms-{i + 1:03d}"
             m["id"] = mid
@@ -164,8 +166,7 @@ def update_plan(plan_name: str, updates: dict) -> dict:
             if key in updates:
                 plan[key] = updates[key]
 
-    plan = modify_plan(plan_name, _do)
-    update_index_entry(plan_name, plan)
+    plan = modify_plan_and_index(plan_name, _do)
     _reschedule()
     return sanitize_plan(dict(plan))
 
