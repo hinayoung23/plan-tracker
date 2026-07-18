@@ -12,6 +12,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from plan_tracker.file_lock import LockedFile
 from plan_tracker.storage import DATA_DIR
 
 logger = logging.getLogger("plan_tracker.daily")
@@ -21,7 +22,7 @@ VALID_COMPLETION_STATUSES = ("completed", "partial", "incomplete")
 
 
 def _load_state() -> dict:
-    """Load the full daily state dict from disk."""
+    """Load the full daily state dict from disk (read-only helper)."""
     try:
         if STATE_FILE.exists():
             with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -31,14 +32,9 @@ def _load_state() -> dict:
     return {}
 
 
-def _save_state(state: dict) -> None:
-    """Persist the daily state dict to disk."""
-    try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except OSError:
-        logger.exception("Failed to save daily state.")
+def _locked_daily_state():
+    """Locked read-modify-write context manager for daily state."""
+    return LockedFile(STATE_FILE, default={})
 
 
 def _today_str() -> str:
@@ -73,22 +69,22 @@ def get_today_state(plan_name: str) -> dict:
 
 def record_checkin_reminded(plan_name: str) -> None:
     """Mark that the morning check-in reminder was sent today."""
-    state = _load_state()
     today = _today_str()
-    entry = state.setdefault(plan_name, {}).setdefault(today, {})
-    entry["checkin_reminded"] = True
-    entry["checkin_reminded_at"] = datetime.now(timezone.utc).isoformat()
-    _save_state(state)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _locked_daily_state() as state:
+        entry = state.setdefault(plan_name, {}).setdefault(today, {})
+        entry["checkin_reminded"] = True
+        entry["checkin_reminded_at"] = now_iso
 
 
 def record_review_reminded(plan_name: str) -> None:
     """Mark that the evening review reminder was sent today."""
-    state = _load_state()
     today = _today_str()
-    entry = state.setdefault(plan_name, {}).setdefault(today, {})
-    entry["review_reminded"] = True
-    entry["review_reminded_at"] = datetime.now(timezone.utc).isoformat()
-    _save_state(state)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _locked_daily_state() as state:
+        entry = state.setdefault(plan_name, {}).setdefault(today, {})
+        entry["review_reminded"] = True
+        entry["review_reminded_at"] = now_iso
 
 
 def record_confirmation(
@@ -120,12 +116,9 @@ def record_confirmation(
         raise ValueError(f"Plan '{plan_name}' not found")
 
     date_str = target_date or _today_str()
-    state = _load_state()
-    entry = state.setdefault(plan_name, {}).setdefault(date_str, {})
     now_utc = datetime.now(timezone.utc)
     now_iso = now_utc.isoformat()
 
-    # Read the plan's configured timeout (default 10 minutes)
     timeout_minutes = 10
     try:
         plan = load_plan(plan_name)
@@ -136,42 +129,39 @@ def record_confirmation(
     except Exception:
         pass
 
-    # Check if this is a late confirmation (after configured timeout)
-    review_reminded_at = entry.get("review_reminded_at")
     is_archived = False
     archive_target_date = None
 
-    if review_reminded_at:
-        try:
-            reminded_dt = datetime.fromisoformat(review_reminded_at).replace(
-                tzinfo=timezone.utc
-            )
-            elapsed_minutes = (now_utc - reminded_dt).total_seconds() / 60
-            if elapsed_minutes > timeout_minutes:
-                is_archived = True
-                # Archive to the next LOCAL day (not UTC)
-                from datetime import timedelta
-                next_day = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-                archive_target_date = next_day
+    with _locked_daily_state() as state:
+        entry = state.setdefault(plan_name, {}).setdefault(date_str, {})
+        review_reminded_at = entry.get("review_reminded_at")
 
-                # Store the archived confirmation on the next day's entry
-                next_entry = state.setdefault(plan_name, {}).setdefault(next_day, {})
-                next_entry["archived_confirmation"] = {
-                    "from_date": date_str,
-                    "completion_status": completion_status,
-                    "notes": notes,
-                    "confirmed_at": now_iso,
-                }
-        except (ValueError, TypeError):
-            pass
+        if review_reminded_at:
+            try:
+                reminded_dt = datetime.fromisoformat(review_reminded_at).replace(
+                    tzinfo=timezone.utc
+                )
+                elapsed_minutes = (now_utc - reminded_dt).total_seconds() / 60
+                if elapsed_minutes > timeout_minutes:
+                    is_archived = True
+                    from datetime import timedelta
+                    next_day = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+                    archive_target_date = next_day
+                    next_entry = state.setdefault(plan_name, {}).setdefault(next_day, {})
+                    next_entry["archived_confirmation"] = {
+                        "from_date": date_str,
+                        "completion_status": completion_status,
+                        "notes": notes,
+                        "confirmed_at": now_iso,
+                    }
+            except (ValueError, TypeError):
+                pass
 
-    if not is_archived:
-        entry["confirmed"] = True
-        entry["confirmed_at"] = now_iso
-        entry["completion_status"] = completion_status
-        entry["completion_notes"] = notes
-
-    _save_state(state)
+        if not is_archived:
+            entry["confirmed"] = True
+            entry["confirmed_at"] = now_iso
+            entry["completion_status"] = completion_status
+            entry["completion_notes"] = notes
 
     return {
         "plan_name": plan_name,
@@ -216,33 +206,26 @@ def check_review_timeout(plan_name: str, timeout_minutes: int = 10) -> bool:
 
 
 def auto_mark_incomplete(plan_name: str) -> dict | None:
-    """Auto-mark today's plan as incomplete due to timeout.
-
-    Only acts if review was sent, not confirmed, and timeout has passed.
-    Returns the result dict or None if conditions not met.
-    """
+    """Auto-mark today's plan as incomplete due to timeout."""
     today = _today_str()
-    state = _load_state()
-    entry = state.get(plan_name, {}).get(today, {})
-
-    if not entry.get("review_reminded"):
-        return None
-    if entry.get("confirmed"):
-        return None
-
-    entry["confirmed"] = True
-    entry["confirmed_at"] = datetime.now(timezone.utc).isoformat()
-    entry["completion_status"] = "incomplete"
-    entry["completion_notes"] = "[自动判定] 超时未确认，标记为未完成"
-    entry["auto_marked"] = True
-    _save_state(state)
-
-    return {
-        "plan_name": plan_name,
-        "date": today,
-        "completion_status": "incomplete",
-        "auto_marked": True,
-    }
+    with _locked_daily_state() as state:
+        entry = state.get(plan_name, {}).get(today, {})
+        if not entry.get("review_reminded"):
+            return None
+        if entry.get("confirmed"):
+            return None
+        entry["confirmed"] = True
+        entry["confirmed_at"] = datetime.now(timezone.utc).isoformat()
+        entry["completion_status"] = "incomplete"
+        entry["completion_notes"] = "[自动判定] 超时未确认，标记为未完成"
+        entry["auto_marked"] = True
+        result = {
+            "plan_name": plan_name,
+            "date": today,
+            "completion_status": "incomplete",
+            "auto_marked": True,
+        }
+    return result
 
 
 def catch_up_past_timeouts(plan_name: str, timeout_minutes: int = 10) -> list[dict]:
@@ -252,58 +235,51 @@ def catch_up_past_timeouts(plan_name: str, timeout_minutes: int = 10) -> list[di
     review was sent but no confirmation (manual or auto) was recorded.
     Returns a list of auto-marked results (empty if nothing to do).
     """
-    state = _load_state()
-    plan_state = state.get(plan_name, {})
-    now_utc = datetime.now(timezone.utc)
-    results = []
-
-    # Only look back 7 days to avoid re-processing ancient history
     from datetime import timedelta
     cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     today = _today_str()
+    now_utc = datetime.now(timezone.utc)
+    results = []
 
-    for date_str in sorted(plan_state.keys()):
-        if date_str >= today:
-            continue  # Skip today — handled by normal timeout check
-        if date_str < cutoff:
-            continue  # Too old
-
-        entry = plan_state[date_str]
-        # Already confirmed (manually or auto-marked) — skip
-        if entry.get("confirmed"):
-            continue
-        # No review was sent — skip
-        if not entry.get("review_reminded"):
-            continue
-        # Try to check if enough time has passed
-        review_reminded_at = entry.get("review_reminded_at")
-        if not review_reminded_at:
-            continue
-        try:
-            reminded_dt = datetime.fromisoformat(review_reminded_at).replace(
-                tzinfo=timezone.utc
-            )
-            elapsed_minutes = (now_utc - reminded_dt).total_seconds() / 60
-            if elapsed_minutes >= timeout_minutes:
-                entry["confirmed"] = True
-                entry["confirmed_at"] = now_utc.isoformat()
-                entry["completion_status"] = "incomplete"
-                entry["completion_notes"] = (
-                    f"[自动判定·补检] {date_str} 晚间确认超时未响应，自动标记为未完成"
+    with _locked_daily_state() as state:
+        plan_state = state.get(plan_name, {})
+        for date_str in sorted(plan_state.keys()):
+            if date_str >= today:
+                continue
+            if date_str < cutoff:
+                continue
+            entry = plan_state[date_str]
+            if entry.get("confirmed"):
+                continue
+            if not entry.get("review_reminded"):
+                continue
+            review_reminded_at = entry.get("review_reminded_at")
+            if not review_reminded_at:
+                continue
+            try:
+                reminded_dt = datetime.fromisoformat(review_reminded_at).replace(
+                    tzinfo=timezone.utc
                 )
-                entry["auto_marked"] = True
-                results.append({
-                    "plan_name": plan_name,
-                    "date": date_str,
-                    "completion_status": "incomplete",
-                    "auto_marked": True,
-                    "catch_up": True,
-                })
-        except (ValueError, TypeError):
-            continue
+                elapsed_minutes = (now_utc - reminded_dt).total_seconds() / 60
+                if elapsed_minutes >= timeout_minutes:
+                    entry["confirmed"] = True
+                    entry["confirmed_at"] = now_utc.isoformat()
+                    entry["completion_status"] = "incomplete"
+                    entry["completion_notes"] = (
+                        f"[自动判定·补检] {date_str} 晚间确认超时未响应，自动标记为未完成"
+                    )
+                    entry["auto_marked"] = True
+                    results.append({
+                        "plan_name": plan_name,
+                        "date": date_str,
+                        "completion_status": "incomplete",
+                        "auto_marked": True,
+                        "catch_up": True,
+                    })
+            except (ValueError, TypeError):
+                continue
 
     if results:
-        _save_state(state)
         logger.info(
             "Catch-up: auto-marked %d past unconfirmed day(s) for %s",
             len(results), plan_name,
@@ -341,48 +317,43 @@ def auto_confirm_from_checkin(plan_name: str, progress_pct: int = 0) -> bool:
     Returns True if an auto-confirmation was performed, False otherwise.
     """
     today = _today_str()
-    state = _load_state()
-    entry = state.get(plan_name, {}).get(today, {})
+    with _locked_daily_state() as state:
+        entry = state.get(plan_name, {}).get(today, {})
 
-    # Only act when review was sent, not yet confirmed, AND within timeout window
-    if not entry.get("review_reminded"):
-        return False
-    if entry.get("confirmed"):
-        return False
+        if not entry.get("review_reminded"):
+            return False
+        if entry.get("confirmed"):
+            return False
 
-    # Verify we're within the confirmation window
-    from plan_tracker.storage import load_plan
-    plan = load_plan(plan_name)
-    if plan:
-        timeout_minutes = plan.get("reminders", {}).get("confirmation_timeout_minutes", 10)
-        review_reminded_at = entry.get("review_reminded_at")
-        if review_reminded_at:
-            try:
-                reminded_dt = datetime.fromisoformat(review_reminded_at).replace(tzinfo=timezone.utc)
-                elapsed = (datetime.now(timezone.utc) - reminded_dt).total_seconds() / 60
-                if elapsed > timeout_minutes:
-                    return False
-            except (ValueError, TypeError):
-                pass
+        from plan_tracker.storage import load_plan
+        plan = load_plan(plan_name)
+        if plan:
+            timeout_minutes = plan.get("reminders", {}).get("confirmation_timeout_minutes", 10)
+            review_reminded_at = entry.get("review_reminded_at")
+            if review_reminded_at:
+                try:
+                    reminded_dt = datetime.fromisoformat(review_reminded_at).replace(tzinfo=timezone.utc)
+                    elapsed = (datetime.now(timezone.utc) - reminded_dt).total_seconds() / 60
+                    if elapsed > timeout_minutes:
+                        return False
+                except (ValueError, TypeError):
+                    pass
 
-    # Map progress to a completion status
-    if progress_pct >= 100:
-        completion_status = "completed"
-    elif progress_pct > 0:
-        completion_status = "partial"
-    else:
-        # Zero progress is still engagement — the user took time to check in
-        completion_status = "partial"
+        if progress_pct >= 100:
+            completion_status = "completed"
+        elif progress_pct > 0:
+            completion_status = "partial"
+        else:
+            completion_status = "partial"
 
-    now_iso = datetime.now(timezone.utc).isoformat()
-    notes = "[自动确认] 用户在对话中通过 check-in 更新了进度"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        notes = "[自动确认] 用户在对话中通过 check-in 更新了进度"
 
-    entry["confirmed"] = True
-    entry["confirmed_at"] = now_iso
-    entry["completion_status"] = completion_status
-    entry["completion_notes"] = notes
-    entry["auto_confirmed_from_checkin"] = True
-    _save_state(state)
+        entry["confirmed"] = True
+        entry["confirmed_at"] = now_iso
+        entry["completion_status"] = completion_status
+        entry["completion_notes"] = notes
+        entry["auto_confirmed_from_checkin"] = True
 
     logger.info(
         "Auto-confirmed review for %s via check-in (status=%s, progress=%d%%)",
@@ -393,9 +364,8 @@ def auto_confirm_from_checkin(plan_name: str, progress_pct: int = 0) -> bool:
 
 def remove_for_plan(plan_name: str) -> int:
     """Remove all daily state entries for a plan (called on plan delete)."""
-    state = _load_state()
-    if plan_name in state:
-        del state[plan_name]
-        _save_state(state)
-        return 1
+    with _locked_daily_state() as state:
+        if plan_name in state:
+            del state[plan_name]
+            return 1
     return 0

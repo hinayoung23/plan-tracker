@@ -216,7 +216,8 @@ async def reminder_configure(plan_name: str, config: dict) -> str:
             reminders[key] = config[key]
 
     save_plan(plan_name, plan)
-    return _json_response({"success": True, "reminders": reminders})
+    return _json_response({"success": True,
+        "reminders": sanitize_plan({"reminders": reminders})["reminders"]})
 
 
 @mcp.tool()

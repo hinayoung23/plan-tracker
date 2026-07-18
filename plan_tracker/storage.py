@@ -9,6 +9,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from plan_tracker.file_lock import LockedFile, safe_write_json
+
 # Only kebab-case alphanumeric names, 1-64 chars, no path separators
 _VALID_PLAN_NAME = re.compile(r'^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
 _MAX_NAME_LEN = 64
@@ -70,17 +72,8 @@ def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _write_atomic(path: Path, data: dict) -> None:
-    """Write *data* as JSON to *path* atomically (tmp + rename)."""
-    _ensure_data_dir()
-    tmp = path.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    tmp.replace(path)
-
-
 def load_index() -> dict:
-    """Load plan index, return empty dict if not found."""
+    """Load plan index (reads outside lock — callers use LockedFile for writes)."""
     _ensure_data_dir()
     if not INDEX_FILE.exists():
         return {"plans": []}
@@ -89,8 +82,8 @@ def load_index() -> dict:
 
 
 def save_index(index: dict) -> None:
-    """Save plan index atomically."""
-    _write_atomic(INDEX_FILE, index)
+    """Save plan index with exclusive file lock."""
+    safe_write_json(INDEX_FILE, index)
 
 
 def plan_path(plan_name: str) -> Path:
@@ -110,11 +103,11 @@ def load_plan(plan_name: str) -> dict | None:
 
 
 def save_plan(plan_name: str, plan: dict) -> None:
-    """Save a plan to disk atomically."""
+    """Save a plan to disk atomically with restrictive permissions."""
     validate_plan_name(plan_name)
     _ensure_data_dir()
     plan["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _write_atomic(DATA_DIR / f"{plan_name}.json", plan)
+    safe_write_json(DATA_DIR / f"{plan_name}.json", plan)
 
 
 def delete_plan_file(plan_name: str) -> bool:
@@ -128,15 +121,14 @@ def delete_plan_file(plan_name: str) -> bool:
 
 
 def update_index_entry(plan_name: str, plan: dict) -> None:
-    """Update or append an entry in the plan index."""
+    """Update or append an entry in the plan index (atomic)."""
     validate_plan_name(plan_name)
-    index = load_index()
     milestones = plan.get("milestones", [])
     completed = sum(1 for m in milestones if m["status"] == "completed")
     total = len(milestones) or 1
     overall = round(completed / total * 100)
-
     now = datetime.now(timezone.utc).isoformat()
+
     entry = {
         "name": plan_name,
         "title": plan.get("title", plan_name),
@@ -149,22 +141,20 @@ def update_index_entry(plan_name: str, plan: dict) -> None:
         "updated_at": now,
     }
 
-    for i, p in enumerate(index["plans"]):
-        if p["name"] == plan_name:
-            index["plans"][i] = entry
-            break
-    else:
-        index["plans"].append(entry)
-
-    save_index(index)
+    with LockedFile(INDEX_FILE, default={"plans": []}) as index:
+        for i, p in enumerate(index["plans"]):
+            if p["name"] == plan_name:
+                index["plans"][i] = entry
+                break
+        else:
+            index["plans"].append(entry)
 
 
 def remove_index_entry(plan_name: str) -> None:
-    """Remove a plan from the index."""
+    """Remove a plan from the index (atomic)."""
     validate_plan_name(plan_name)
-    index = load_index()
-    index["plans"] = [p for p in index["plans"] if p["name"] != plan_name]
-    save_index(index)
+    with LockedFile(INDEX_FILE, default={"plans": []}) as index:
+        index["plans"] = [p for p in index["plans"] if p["name"] != plan_name]
 
 
 def _compute_plan_status(plan: dict) -> str:

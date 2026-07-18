@@ -37,6 +37,8 @@ def create_plan(
     validate_plan_name(name)
     if category not in CATEGORIES:
         raise ValueError(f"Category must be one of: {CATEGORIES}")
+    if weekly_hours_target < 0:
+        raise ValueError("weekly_hours_target must be >= 0")
     if load_plan(name) is not None:
         raise ValueError(f"Plan '{name}' already exists")
 

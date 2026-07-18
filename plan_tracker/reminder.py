@@ -7,15 +7,15 @@ that were missed while the daemon was down.
 Notifications are dispatched through configured channels.
 """
 
-import fcntl
 import json
 import logging
 import sched
 import threading
 import time as _time
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from plan_tracker.file_lock import LockedFile
 
 from plan_tracker.storage import INDEX_FILE, DATA_DIR, load_plan, load_index
 from plan_tracker.notification import EmailChannel, WebhookChannel
@@ -36,35 +36,9 @@ NOTIFICATION_COOLDOWN_HOURS = 12
 STATE_FILE = DATA_DIR / ".reminder_state.json"
 
 
-@contextmanager
 def _locked_state():
-    """Context manager that provides exclusive access to the cooldown state.
-
-    Acquires fcntl.flock(LOCK_EX) on STATE_FILE before yielding the
-    state dict, and writes + releases the lock on exit.  This makes
-    the load → check → modify → save cycle atomic, preventing race
-    conditions when multiple daemon processes or the ``_check_all``
-    startup path fire simultaneously.
-    """
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        f = open(STATE_FILE, "r+")
-    except FileNotFoundError:
-        f = open(STATE_FILE, "w+")
-    try:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        f.seek(0)
-        try:
-            state = json.load(f)
-        except (json.JSONDecodeError, ValueError):
-            state = {}
-        yield state
-        f.seek(0)
-        f.truncate()
-        json.dump(state, f, indent=2)
-    finally:
-        fcntl.flock(f, fcntl.LOCK_UN)
-        f.close()
+    """Backwards-compatible wrapper around LockedFile for reminder state."""
+    return LockedFile(STATE_FILE, default={})
 
 
 def check_now() -> None:
@@ -400,8 +374,7 @@ class ReminderEngine:
             plan_title = note.get("plan_title", plan_name)
             ntype = note.get("type", "info")
 
-            has_webhook = "webhook" in channels
-            enqueued = False
+            delivered = False  # Any channel successfully sent?
 
             for ch in channels:
                 if ch == "email":
@@ -418,15 +391,16 @@ class ReminderEngine:
                                 message=note["message"], plan_title=plan_title,
                                 milestone_title=mtitle, milestone_id=mid,
                             )
-                        enqueued = True
-                elif ch == "mcp" and not enqueued:
-                    # Only enqueue via MCP if no other channel already did
-                    enqueue_notification(
-                        plan_name=plan_name, ntype=ntype,
-                        message=note["message"], plan_title=plan_title,
-                        milestone_title=mtitle, milestone_id=mid,
-                    )
-                    enqueued = True
+                        delivered = True
+                elif ch == "mcp":
+                    # MCP is a queue fallback — only enqueue if no
+                    # real-time channel (webhook/email) was attempted
+                    if not delivered:
+                        enqueue_notification(
+                            plan_name=plan_name, ntype=ntype,
+                            message=note["message"], plan_title=plan_title,
+                            milestone_title=mtitle, milestone_id=mid,
+                        )
 
     # ── Daily check (used by _check_all on startup) ───────────────
 
@@ -444,11 +418,11 @@ class ReminderEngine:
         timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
         past_results = catch_up_past_timeouts(entry["name"], timeout_minutes)
         for result in past_results:
+            key = f"{entry['name']}:daily_timeout"
             with _locked_state() as state:
-                key = f"{entry['name']}:daily_timeout"
                 if _should_notify(state, key, "daily_timeout"):
                     state[key] = {"type": "daily_timeout", "time": _cooldown_now_iso()}
-            notifications.append(_build_daily_timeout(entry, plan))
+                    notifications.append(_build_daily_timeout(entry, plan))
 
         # Atomic checkin cooldown: only one path wins the race
         should_checkin = False
@@ -529,14 +503,25 @@ def _today_str() -> str:
 
 
 def _in_time_window(now: datetime, time_str: str, window_hours: int = 3) -> bool:
-    """Check if now is within [time_str, time_str + window_hours]."""
+    """Check if *now* is within [time_str, time_str + window_hours].
+
+    Handles cross-midnight windows correctly (e.g. 23:00 + 3h wraps to 02:00).
+    """
     try:
         parts = time_str.split(":")
         target_h, target_m = int(parts[0]), int(parts[1])
         target_minutes = target_h * 60 + target_m
         now_minutes = now.hour * 60 + now.minute
         window_minutes = window_hours * 60
-        return target_minutes <= now_minutes < target_minutes + window_minutes
+
+        end_minutes = target_minutes + window_minutes
+        if end_minutes < 1440:
+            # Window within same day
+            return target_minutes <= now_minutes < end_minutes
+        else:
+            # Window wraps past midnight
+            end_minutes -= 1440
+            return now_minutes >= target_minutes or now_minutes < end_minutes
     except (ValueError, IndexError):
         return False
 

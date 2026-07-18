@@ -59,6 +59,12 @@ def add_milestone(plan_name: str, milestone: dict,
     milestone.setdefault("notes", "")
     milestone.setdefault("checkins", [])
 
+    if not milestone.get("title"):
+        raise ValueError("Milestone must have a title")
+    if not milestone.get("target_date"):
+        raise ValueError("Milestone must have a target_date")
+    if milestone.get("effort_hours_estimate", 0) < 0:
+        raise ValueError("effort_hours_estimate must be >= 0")
     if milestone["status"] not in VALID_STATUSES:
         raise ValueError(f"Invalid status: {milestone['status']}")
 
