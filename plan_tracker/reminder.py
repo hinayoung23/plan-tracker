@@ -78,15 +78,26 @@ class ReminderEngine:
 
     def _interruptible_sleep(self, delay: float) -> None:
         """Sleep that returns immediately on stop() or wake()."""
-        deadline = _time.time() + delay
-        while _time.time() < deadline and not self._stop.is_set():
-            remaining = deadline - _time.time()
-            if remaining <= 0:
-                break
-            # Wait for either _stop OR _wake, whichever comes first
-            self._stop.wait(min(remaining, 0.1))
-            if self._wake.is_set():
-                break
+        if delay <= 0:
+            self._wake.clear()
+            return
+        # For delays under 10s: poll _wake frequently for low-latency
+        if delay < 10.0:
+            deadline = _time.time() + delay
+            while _time.time() < deadline and not self._stop.is_set():
+                remaining = deadline - _time.time()
+                if remaining <= 0:
+                    break
+                self._stop.wait(min(remaining, 0.05))
+                if self._wake.is_set():
+                    break
+        else:
+            # Long delay: check periodically for wake/stop
+            deadline = _time.time() + delay
+            while _time.time() < deadline and not self._stop.is_set():
+                self._stop.wait(min(deadline - _time.time(), 5.0))
+                if self._wake.is_set():
+                    break
         self._wake.clear()
 
     # ── Lifecycle ─────────────────────────────────────────────────

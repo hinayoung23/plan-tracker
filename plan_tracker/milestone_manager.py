@@ -67,10 +67,7 @@ def add_milestone(plan_name: str, milestone: dict,
 
     plan = modify_plan(plan_name, _add)
     update_index_entry(plan_name, plan)
-    return result[0]
-
-
-def update_milestone(plan_name: str, milestone_id: str, updates: dict) -> dict:
+    return result[0](plan_name: str, milestone_id: str, updates: dict) -> dict:
     """Update milestone fields (atomic).
 
     When status is changed to ``completed``, syncs completion_pct to

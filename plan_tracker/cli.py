@@ -309,6 +309,16 @@ def cmd_daily_confirm(args) -> None:
 
 # ── Reminder commands ─────────────────────────────────────────────
 
+def _signal_reschedule() -> None:
+    """Touch the reschedule marker so the daemon picks up config changes."""
+    try:
+        from plan_tracker.reminder import RESCHEDULE_MARKER
+        RESCHEDULE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        RESCHEDULE_MARKER.touch()
+    except Exception:
+        pass
+
+
 def cmd_reminder_configure(args) -> None:
     from plan_tracker.storage import modify_plan
     configurable = (
@@ -339,6 +349,7 @@ def cmd_reminder_configure(args) -> None:
         modify_plan(args.plan, _do)
     except ValueError as e:
         _emit(_err(str(e)), ok=False)
+    _signal_reschedule()
     _emit(_ok(result[0]))
 
 
@@ -351,6 +362,7 @@ def cmd_reminder_toggle(args) -> None:
         modify_plan(args.plan, _do)
     except ValueError as e:
         _emit(_err(str(e)), ok=False)
+    _signal_reschedule()
     _emit(_ok(enabled=enabled))
 
 

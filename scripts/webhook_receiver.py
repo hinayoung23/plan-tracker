@@ -228,8 +228,10 @@ class SmartPoller:
     # ── internals ───────────────────────────────────────────────
 
     def _ensure_running(self) -> None:
-        """Start the poller thread if it isn't already alive."""
+        """Start the poller thread if one isn't already active."""
         with self._lock:
+            # If a thread is alive AND still in its poll loop (_running True),
+            # we don't need to start another one.
             if self._running and self._thread and self._thread.is_alive():
                 return
             self._running = True
@@ -271,7 +273,8 @@ class SmartPoller:
                     "Smart poller: queue empty through full backoff cycle "
                     "(max %ds) — going dormant", _BACKOFF_SEQUENCE[-1]
                 )
-                self._running = False
+                with self._lock:
+                    self._running = False
                 break
 
             # ── Wait (interruptible by wakeup) ──────────────────
@@ -279,7 +282,11 @@ class SmartPoller:
             self._wakeup.wait(timeout=timeout)
             self._wakeup.clear()
 
-        self._thread = None  # Signal that we've exited so _ensure_running can restart
+        # Only clear _thread if we're still the active thread reference,
+        # and do it under lock to avoid races with _ensure_running.
+        with self._lock:
+            if self._thread is threading.current_thread():
+                self._thread = None
         logger.info("Smart poller stopped (dormant)")
 
 

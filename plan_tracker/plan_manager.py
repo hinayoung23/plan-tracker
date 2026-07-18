@@ -146,20 +146,17 @@ def update_plan(plan_name: str, updates: dict) -> dict:
         if key == "weekly_hours_target" and updates[key] < 0:
             raise ValueError("weekly_hours_target must be >= 0")
 
-    result = [None]
     def _do(plan):
         updatable = ("title", "goal", "description", "category", "tags",
                     "target_end_date", "weekly_hours_target")
         for key in updatable:
             if key in updates:
                 plan[key] = updates[key]
-        result[0] = plan
 
-    modify_plan(plan_name, _do)
-    updated = result[0]
-    update_index_entry(plan_name, updated)
+    plan = modify_plan(plan_name, _do)
+    update_index_entry(plan_name, plan)
     _reschedule()
-    return sanitize_plan(updated)
+    return sanitize_plan(dict(plan))
 
 
 def delete_plan(plan_name: str) -> bool:
