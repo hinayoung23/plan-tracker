@@ -103,9 +103,12 @@ def is_running() -> bool:
     try:
         os.kill(pid, 0)
         return _verify_daemon_process(pid)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
         remove_pid()
         return False
+    except PermissionError:
+        # Process exists but we can't signal it — assume running
+        return True
 
 
 def _kill_any_daemon() -> int:

@@ -99,6 +99,11 @@ def create_plan(
 
 def _init_milestones(raw: list[dict]) -> list[dict]:
     """Validate and initialize milestone list with defaults."""
+    # Check for duplicate IDs
+    explicit_ids = [m.get("id") for m in raw if m.get("id")]
+    if len(explicit_ids) != len(set(explicit_ids)):
+        raise ValueError("Duplicate milestone IDs are not allowed")
+
     result = []
     for i, m in enumerate(raw):
         if not m.get("title"):

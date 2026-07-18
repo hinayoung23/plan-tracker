@@ -92,10 +92,12 @@ class ReminderEngine:
                 if self._wake.is_set():
                     break
         else:
-            # Long delay: check periodically for wake/stop
+            # Long delay: poll at 1s for wake/stop. Coarser than the
+            # short-delay path (50ms) but still gives sub-second wake
+            # latency while keeping idle overhead low.
             deadline = _time.time() + delay
             while _time.time() < deadline and not self._stop.is_set():
-                self._stop.wait(min(deadline - _time.time(), 5.0))
+                self._stop.wait(min(deadline - _time.time(), 1.0))
                 if self._wake.is_set():
                     break
         self._wake.clear()

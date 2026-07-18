@@ -172,8 +172,8 @@ def update_index_entry(plan_name: str, plan: dict) -> None:
     validate_plan_name(plan_name)
     milestones = plan.get("milestones", [])
     completed = sum(1 for m in milestones if m["status"] == "completed")
-    total = len(milestones) or 1
-    overall = round(completed / total * 100)
+    total = len(milestones)
+    overall = round(completed / total * 100) if total else 0
     now = datetime.now(timezone.utc).isoformat()
 
     entry = {
