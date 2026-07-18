@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from plan_tracker.storage import (
     load_plan,
     save_plan,
+    modify_plan,
     delete_plan_file,
     update_index_entry,
     remove_index_entry,
@@ -168,24 +169,24 @@ def delete_plan(plan_name: str) -> bool:
     if plan is None:
         return False
 
-    # Clean up associated data
+    # Clean up associated data. Log failures but don't block deletion.
+    import logging
+    _log = logging.getLogger("plan_tracker.plan_manager")
     try:
         from plan_tracker.notification_queue import remove_for_plan
-        removed_q = remove_for_plan(plan_name)
+        remove_for_plan(plan_name)
     except Exception:
-        removed_q = 0
-
+        _log.exception("Failed to clean notification queue for %s", plan_name)
     try:
         from plan_tracker.daily_tracker import remove_for_plan as remove_daily
-        removed_d = remove_daily(plan_name)
+        remove_daily(plan_name)
     except Exception:
-        removed_d = 0
-
+        _log.exception("Failed to clean daily state for %s", plan_name)
     try:
         from plan_tracker.reminder import remove_plan_state
         remove_plan_state(plan_name)
     except Exception:
-        pass
+        _log.exception("Failed to clean reminder state for %s", plan_name)
 
     delete_plan_file(plan_name)
     remove_index_entry(plan_name)

@@ -228,7 +228,7 @@ class SmartPoller:
     def _ensure_running(self) -> None:
         """Start the poller thread if it isn't already alive."""
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            if self._running and self._thread and self._thread.is_alive():
                 return
             self._running = True
             self._wakeup.clear()

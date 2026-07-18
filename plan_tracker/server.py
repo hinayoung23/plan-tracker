@@ -208,58 +208,58 @@ async def checkin_add(
 @mcp.tool()
 async def reminder_configure(plan_name: str, config: dict) -> str:
     """Configure reminders for a plan. config keys: enabled, before_due_days, weekly_checkin_day, weekly_checkin_time, daily_checkin_time, daily_review_time, daily_checkin_enabled, daily_review_enabled, confirmation_timeout_minutes, notification_channels."""
-    from plan_tracker.storage import load_plan, save_plan, sanitize_plan
+    from plan_tracker.storage import sanitize_plan, modify_plan
 
-    plan = load_plan(plan_name)
-    if plan is None:
-        return _json_response({"success": False, "error": f"Plan '{plan_name}' not found"})
-
-    reminders = plan.setdefault("reminders", {})
+    # Validate all fields before modifying
     int_keys = {"before_due_days", "confirmation_timeout_minutes"}
     bool_keys = {"enabled", "daily_checkin_enabled", "daily_review_enabled"}
     time_keys = {"weekly_checkin_time", "daily_checkin_time", "daily_review_time"}
     day_keys = {"weekly_checkin_day"}
     valid_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", ""}
     valid_channels = {"mcp", "webhook", "email"}
-    configurable = (
-        "enabled", "before_due_days", "weekly_checkin_day", "weekly_checkin_time",
-        "daily_checkin_time", "daily_review_time",
-        "daily_checkin_enabled", "daily_review_enabled",
-        "confirmation_timeout_minutes", "notification_channels",
-    )
-    for key in configurable:
-        if key in config:
-            val = config[key]
-            if key in int_keys:
-                try:
-                    val = int(val)
-                except (ValueError, TypeError):
-                    return _json_response({"success": False, "error": f"{key} must be an integer"})
-                if val < 0:
-                    return _json_response({"success": False, "error": f"{key} must be >= 0"})
-            elif key in bool_keys:
-                val = val if isinstance(val, bool) else str(val).lower() in ("true", "1", "yes")
-            elif key in time_keys:
-                from plan_tracker.reminder import _validate_time_str
-                if not _validate_time_str(str(val)):
-                    return _json_response({"success": False, "error": f"Invalid time: {val} (use HH:MM)"})
-            elif key in day_keys:
-                if str(val).lower() not in valid_days:
-                    return _json_response({"success": False, "error": f"Invalid day: {val}"})
-            elif key == "notification_channels":
-                if isinstance(val, str):
-                    val = [c.strip() for c in val.split(",")]
-                if not isinstance(val, list):
-                    return _json_response({"success": False, "error": "notification_channels must be a list"})
-                for ch in val:
-                    if ch not in valid_channels:
-                        return _json_response({"success": False, "error": f"Unknown channel: {ch}"})
-            reminders[key] = val
+    validated = {}
+    for key in config:
+        if key not in ("enabled", "before_due_days", "weekly_checkin_day",
+                       "weekly_checkin_time", "daily_checkin_time", "daily_review_time",
+                       "daily_checkin_enabled", "daily_review_enabled",
+                       "confirmation_timeout_minutes", "notification_channels"):
+            continue
+        val = config[key]
+        if key in int_keys:
+            try: val = int(val)
+            except (ValueError, TypeError): return _json_response({"success": False, "error": f"{key} must be an integer"})
+            if val < 0: return _json_response({"success": False, "error": f"{key} must be >= 0"})
+        elif key in bool_keys:
+            val = val if isinstance(val, bool) else str(val).lower() in ("true", "1", "yes")
+        elif key in time_keys:
+            from plan_tracker.reminder import _validate_time_str
+            if not _validate_time_str(str(val)):
+                return _json_response({"success": False, "error": f"Invalid time: {val} (use HH:MM)"})
+        elif key in day_keys:
+            if str(val).lower() not in valid_days:
+                return _json_response({"success": False, "error": f"Invalid day: {val}"})
+        elif key == "notification_channels":
+            if isinstance(val, str): val = [c.strip() for c in val.split(",")]
+            if not isinstance(val, list): return _json_response({"success": False, "error": "notification_channels must be a list"})
+            for ch in val:
+                if ch not in valid_channels: return _json_response({"success": False, "error": f"Unknown channel: {ch}"})
+        validated[key] = val
 
-    save_plan(plan_name, plan)
+    result = [None]
+    def _do(plan):
+        reminders = plan.setdefault("reminders", {})
+        for key, val in validated.items():
+            reminders[key] = val
+        result[0] = dict(reminders)
+
+    try:
+        modify_plan(plan_name, _do)
+    except ValueError as e:
+        return _json_response({"success": False, "error": str(e)})
+
     _signal_reschedule()
     return _json_response({"success": True,
-        "reminders": sanitize_plan({"reminders": reminders})["reminders"]})
+        "reminders": sanitize_plan({"reminders": result[0]})["reminders"]})
 
 
 @mcp.tool()

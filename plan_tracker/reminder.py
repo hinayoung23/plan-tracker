@@ -70,14 +70,22 @@ class ReminderEngine:
 
     def __init__(self):
         self._stop = threading.Event()
+        self._wake = threading.Event()  # For scheduler wake — separate from _stop
         self._scheduler = sched.scheduler(_time.time, self._interruptible_sleep)
         self._thread = None
 
     # ── Interruptible sleep (respects _stop) ──────────────────────
 
     def _interruptible_sleep(self, delay: float) -> None:
-        """Sleep that returns immediately when stop() is called."""
-        self._stop.wait(delay)
+        """Sleep that returns on stop() or wake()."""
+        # Wait for delay OR until _stop OR _wake is set
+        deadline = _time.time() + delay
+        while _time.time() < deadline and not self._stop.is_set() and not self._wake.is_set():
+            remaining = deadline - _time.time()
+            if remaining <= 0:
+                break
+            self._stop.wait(min(remaining, 1.0))
+        self._wake.clear()
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -164,10 +172,7 @@ class ReminderEngine:
             self._schedule_weekly_event(wtime, weekly_day, plan_name)
 
         was_stopped = self._stop.is_set()
-        self._stop.set()
-        _time.sleep(0.01)
-        if not was_stopped:
-            self._stop.clear()
+        self._wake.set()
 
 
     def _schedule_catchup_timeouts(self) -> None:
@@ -286,10 +291,7 @@ class ReminderEngine:
         # Wake the scheduler — save and restore _stop to avoid
         # interfering with a genuine daemon shutdown in progress.
         was_stopped = self._stop.is_set()
-        self._stop.set()
-        _time.sleep(0.01)
-        if not was_stopped:
-            self._stop.clear()
+        self._wake.set()
 
     def _schedule_event(self, time_str: str, callback, plan_name: str,
                         offset_minutes: int = 0) -> None:
@@ -319,18 +321,14 @@ class ReminderEngine:
             return
         reminders = plan.get("reminders", {})
 
-        # Atomic cooldown check — prevents duplicate notifications when
-        # multiple trigger paths (daemon + cron / startup catch-up) race.
         cooldown_key = f"{plan_name}:daily_checkin"
+        should_send = False
         with _locked_state() as state:
-            if not _should_notify(state, cooldown_key, "daily_checkin"):
-                logger.debug("Skipping daily checkin for %s — within cooldown", plan_name)
-            else:
-                # Release lock before slow I/O to avoid contention
+            if _should_notify(state, cooldown_key, "daily_checkin"):
                 state[cooldown_key] = {"type": "daily_checkin", "time": _cooldown_now_iso()}
-        # — lock released here; dispatch outside the lock ——————
+                should_send = True
 
-        if state.get(cooldown_key, {}).get("time"):
+        if should_send:
             today_state = get_today_state(plan_name)
             if not today_state.get("checkin_reminded"):
                 record_checkin_reminded(plan_name)
@@ -354,15 +352,14 @@ class ReminderEngine:
             return
         reminders = plan.get("reminders", {})
 
-        # Atomic cooldown check — see _fire_daily_checkin for rationale.
         cooldown_key = f"{plan_name}:daily_review"
+        should_send = False
         with _locked_state() as state:
-            if not _should_notify(state, cooldown_key, "daily_review"):
-                logger.debug("Skipping daily review for %s — within cooldown", plan_name)
-            else:
+            if _should_notify(state, cooldown_key, "daily_review"):
                 state[cooldown_key] = {"type": "daily_review", "time": _cooldown_now_iso()}
+                should_send = True
 
-        if state.get(cooldown_key, {}).get("time"):
+        if should_send:
             today_state = get_today_state(plan_name)
             if not today_state.get("review_reminded"):
                 record_review_reminded(plan_name)
