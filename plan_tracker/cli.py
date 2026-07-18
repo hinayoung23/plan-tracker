@@ -310,46 +310,47 @@ def cmd_daily_confirm(args) -> None:
 # ── Reminder commands ─────────────────────────────────────────────
 
 def cmd_reminder_configure(args) -> None:
-    from plan_tracker.storage import load_plan, save_plan
-
-    plan = load_plan(args.plan)
-    if plan is None:
-        _emit(_err(f"Plan '{args.plan}' not found"), ok=False)
-
-    reminders = plan.setdefault("reminders", {})
+    from plan_tracker.storage import modify_plan
     configurable = (
         "enabled", "before_due_days", "weekly_checkin_day", "weekly_checkin_time",
         "daily_checkin_time", "daily_review_time",
         "daily_checkin_enabled", "daily_review_enabled",
         "confirmation_timeout_minutes", "notification_channels",
     )
+    validated = {}
     for key in configurable:
         val = getattr(args, key.replace("-", "_"), None)
         if val is not None:
-            # Convert types
             if key in ("enabled", "daily_checkin_enabled", "daily_review_enabled"):
-                reminders[key] = val.lower() == "true" if isinstance(val, str) else bool(val)
+                validated[key] = val.lower() == "true" if isinstance(val, str) else bool(val)
             elif key in ("before_due_days", "confirmation_timeout_minutes"):
-                reminders[key] = int(val)
+                validated[key] = int(val)
             elif key == "notification_channels":
-                reminders[key] = val.split(",")
+                validated[key] = val.split(",")
             else:
-                reminders[key] = val
+                validated[key] = val
 
-    save_plan(args.plan, plan)
-    _emit(_ok(reminders))
+    result = [None]
+    def _do(plan):
+        reminders = plan.setdefault("reminders", {})
+        reminders.update(validated)
+        result[0] = dict(reminders)
+    try:
+        modify_plan(args.plan, _do)
+    except ValueError as e:
+        _emit(_err(str(e)), ok=False)
+    _emit(_ok(result[0]))
 
 
 def cmd_reminder_toggle(args) -> None:
-    from plan_tracker.storage import load_plan, save_plan
-
-    plan = load_plan(args.plan)
-    if plan is None:
-        _emit(_err(f"Plan '{args.plan}' not found"), ok=False)
-
+    from plan_tracker.storage import modify_plan
     enabled = args.enabled.lower() == "true" if isinstance(args.enabled, str) else bool(args.enabled)
-    plan.setdefault("reminders", {})["enabled"] = enabled
-    save_plan(args.plan, plan)
+    def _do(plan):
+        plan.setdefault("reminders", {})["enabled"] = enabled
+    try:
+        modify_plan(args.plan, _do)
+    except ValueError as e:
+        _emit(_err(str(e)), ok=False)
     _emit(_ok(enabled=enabled))
 
 

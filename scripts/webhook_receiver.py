@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import logging.handlers
+import os
 import subprocess
 import sys
 import threading
@@ -31,8 +32,10 @@ from pathlib import Path
 
 _PKG_DIR = Path(__file__).resolve().parent.parent
 _PYTHON = sys.executable
-_DELIVERY_CONFIG = _PKG_DIR / "data" / "webhook_delivery.json"
-_WEBHOOK_LOG = _PKG_DIR / "data" / "webhook-stderr.log"
+# Use PLAN_TRACKER_DATA_DIR if set, otherwise fall back to source-relative path
+_DATA_DIR = Path(os.environ.get("PLAN_TRACKER_DATA_DIR", _PKG_DIR / "data"))
+_DELIVERY_CONFIG = _DATA_DIR / "webhook_delivery.json"
+_WEBHOOK_LOG = _DATA_DIR / "webhook-stderr.log"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -276,6 +279,7 @@ class SmartPoller:
             self._wakeup.wait(timeout=timeout)
             self._wakeup.clear()
 
+        self._thread = None  # Signal that we've exited so _ensure_running can restart
         logger.info("Smart poller stopped (dormant)")
 
 

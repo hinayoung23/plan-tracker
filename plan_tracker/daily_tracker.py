@@ -22,11 +22,16 @@ VALID_COMPLETION_STATUSES = ("completed", "partial", "incomplete")
 
 
 def _load_state() -> dict:
-    """Load the full daily state dict from disk (read-only helper)."""
+    """Load daily state with shared read lock (safe for concurrent reads)."""
     try:
         if STATE_FILE.exists():
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                import fcntl
+                fcntl.flock(f, fcntl.LOCK_SH)
+                try:
+                    return json.load(f)
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
     except (json.JSONDecodeError, OSError):
         logger.warning("Failed to load daily state, starting fresh.")
     return {}

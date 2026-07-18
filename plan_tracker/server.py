@@ -265,14 +265,13 @@ async def reminder_configure(plan_name: str, config: dict) -> str:
 @mcp.tool()
 async def reminder_toggle(plan_name: str, enabled: bool) -> str:
     """Enable or disable reminders for a plan."""
-    from plan_tracker.storage import load_plan, save_plan, sanitize_plan
-
-    plan = load_plan(plan_name)
-    if plan is None:
-        return _json_response({"success": False, "error": f"Plan '{plan_name}' not found"})
-
-    plan.setdefault("reminders", {})["enabled"] = enabled
-    save_plan(plan_name, plan)
+    from plan_tracker.storage import modify_plan
+    try:
+        def _do(plan):
+            plan.setdefault("reminders", {})["enabled"] = enabled
+        modify_plan(plan_name, _do)
+    except ValueError as e:
+        return _json_response({"success": False, "error": str(e)})
     _signal_reschedule()
     return _json_response({"success": True, "enabled": enabled})
 
@@ -345,70 +344,78 @@ async def daily_status(plan_name: str) -> str:
 @mcp.tool()
 async def email_configure(plan_name: str, config: dict) -> str:
     """Configure email notifications via mail.tempbox.cn. config: enabled, api_url, api_key_id, api_secret, recipient."""
-    from plan_tracker.storage import load_plan, save_plan, sanitize_plan
+    from plan_tracker.storage import sanitize_plan, modify_plan
 
-    plan = load_plan(plan_name)
-    if plan is None:
-        return _json_response({"success": False, "error": f"Plan '{plan_name}' not found"})
-
-    email = plan.setdefault("reminders", {}).setdefault("email", {})
+    # Validate first
+    validated_email = {}
     for key in ("enabled", "api_url", "api_key_id", "api_secret", "recipient"):
         if key in config:
             val = config[key]
             if key == "api_url" and isinstance(val, str):
                 from urllib.parse import urlparse
                 parsed = urlparse(val)
-                if parsed.scheme not in ("http", "https"):
-                    return _json_response({"success": False, "error": "Email API URL must use http or https"})
+                if parsed.scheme != "https":
+                    return _json_response({"success": False, "error": "Email API URL must use HTTPS"})
                 if parsed.hostname is None:
                     return _json_response({"success": False, "error": "Invalid email API URL"})
-                # Only allow known email service hosts to prevent SSRF
                 allowed_hosts = {"mail.tempbox.cn", "api.sendgrid.com", "api.mailgun.net",
                                 "smtp.gmail.com", "smtp.office365.com"}
                 if parsed.hostname not in allowed_hosts and not parsed.hostname.endswith(".tempbox.cn"):
                     return _json_response({"success": False,
-                        "error": f"Email API host '{parsed.hostname}' not allowed. Use a supported provider."})
+                        "error": f"Email API host '{parsed.hostname}' not allowed."})
+            validated_email[key] = val
+
+    result = [None]
+    def _do(plan):
+        email = plan.setdefault("reminders", {}).setdefault("email", {})
+        for key, val in validated_email.items():
             email[key] = val
+        channels = plan["reminders"].setdefault("notification_channels", ["mcp"])
+        if "email" not in channels:
+            channels.append("email")
+        result[0] = {k: v for k, v in email.items() if k != "api_secret"}
+        if email.get("api_secret"):
+            result[0]["api_secret"] = "***"
 
-    channels = plan["reminders"].setdefault("notification_channels", ["mcp"])
-    if "email" not in channels:
-        channels.append("email")
+    try:
+        modify_plan(plan_name, _do)
+    except ValueError as e:
+        return _json_response({"success": False, "error": str(e)})
 
-    save_plan(plan_name, plan)
-    # Never expose api_secret in response
-    safe = {k: v for k, v in email.items() if k != "api_secret"}
-    safe["api_secret"] = "***" if email.get("api_secret") else ""
-    return _json_response({"success": True, "email": safe})
+    return _json_response({"success": True, "email": result[0]})
 
 
 @mcp.tool()
 async def webhook_configure(plan_name: str, config: dict) -> str:
     """Configure webhook notifications for real-time push delivery. config: url (required)."""
-    from plan_tracker.storage import load_plan, save_plan, sanitize_plan
+    from plan_tracker.storage import modify_plan
 
-    plan = load_plan(plan_name)
-    if plan is None:
-        return _json_response({"success": False, "error": f"Plan '{plan_name}' not found"})
-
-    webhook = plan.setdefault("reminders", {}).setdefault("webhook", {})
+    validated = {}
     if "url" in config:
-        url = config["url"]
-        # Only allow localhost URLs to prevent SSRF
         from urllib.parse import urlparse
-        parsed = urlparse(url)
+        parsed = urlparse(config["url"])
         if parsed.scheme not in ("http", "https"):
             return _json_response({"success": False, "error": "Webhook URL must use http or https"})
         if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
             return _json_response({"success": False, "error": "Webhook URL must point to localhost"})
-        webhook["url"] = url
+        validated["url"] = config["url"]
 
-    channels = plan["reminders"].setdefault("notification_channels", ["mcp"])
-    if "webhook" not in channels:
-        channels.append("webhook")
+    result = [None]
+    def _do(plan):
+        webhook = plan.setdefault("reminders", {}).setdefault("webhook", {})
+        webhook.update(validated)
+        channels = plan["reminders"].setdefault("notification_channels", ["mcp"])
+        if "webhook" not in channels:
+            channels.append("webhook")
+        result[0] = dict(webhook)
 
-    save_plan(plan_name, plan)
+    try:
+        modify_plan(plan_name, _do)
+    except ValueError as e:
+        return _json_response({"success": False, "error": str(e)})
+
     _signal_reschedule()
-    return _json_response({"success": True, "webhook": webhook})
+    return _json_response({"success": True, "webhook": result[0]})
 
 
 @mcp.tool()

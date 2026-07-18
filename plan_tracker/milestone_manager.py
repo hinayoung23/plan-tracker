@@ -65,8 +65,8 @@ def add_milestone(plan_name: str, milestone: dict,
             m["order"] = i + 1
         result[0] = new_ms
 
-    modify_plan(plan_name, _add)
-    update_index_entry(plan_name, load_plan(plan_name))
+    plan = modify_plan(plan_name, _add)
+    update_index_entry(plan_name, plan)
     return result[0]
 
 
@@ -108,8 +108,8 @@ def update_milestone(plan_name: str, milestone_id: str, updates: dict) -> dict:
 
         result[0] = ms
 
-    modify_plan(plan_name, _update)
-    update_index_entry(plan_name, load_plan(plan_name))
+    plan = modify_plan(plan_name, _update)
+    update_index_entry(plan_name, plan)
     return result[0]
 
 

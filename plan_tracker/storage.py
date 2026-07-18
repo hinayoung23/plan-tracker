@@ -152,7 +152,7 @@ def modify_plan(plan_name: str, modifier_fn) -> dict | None:
             current["updated_at"] = datetime.now(timezone.utc).isoformat()
             modifier_fn(current)
             return dict(current)
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError:
         raise ValueError(f"Plan '{plan_name}' not found")
         return dict(current)
 
