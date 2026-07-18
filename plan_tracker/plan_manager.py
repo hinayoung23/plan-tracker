@@ -22,6 +22,16 @@ VALID_STATUSES = ("pending", "in_progress", "completed", "blocked")
 VALID_MORALE = ("struggling", "neutral", "good", "great")
 
 
+def _reschedule() -> None:
+    """Touch the reschedule marker so the daemon picks up new/changed plans."""
+    try:
+        from plan_tracker.reminder import RESCHEDULE_MARKER
+        RESCHEDULE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        RESCHEDULE_MARKER.touch()
+    except Exception:
+        pass
+
+
 def create_plan(
     name: str,
     title: str,
@@ -82,6 +92,7 @@ def create_plan(
 
     save_plan(name, plan)
     update_index_entry(name, plan)
+    _reschedule()
     return sanitize_plan(plan)
 
 
@@ -131,9 +142,12 @@ def update_plan(plan_name: str, updates: dict) -> dict:
     )
     for key in updatable:
         if key in updates:
-            if key == "category" and updates[key] not in CATEGORIES:
-                raise ValueError(f"Invalid category: {updates[key]}")
-            plan[key] = updates[key]
+            val = updates[key]
+            if key == "category" and val not in CATEGORIES:
+                raise ValueError(f"Invalid category: {val}")
+            if key == "weekly_hours_target" and val < 0:
+                raise ValueError("weekly_hours_target must be >= 0")
+            plan[key] = val
 
     save_plan(plan_name, plan)
     update_index_entry(plan_name, plan)

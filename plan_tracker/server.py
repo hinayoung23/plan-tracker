@@ -50,6 +50,16 @@ logger = logging.getLogger("plan_tracker.server")
 mcp = FastMCP("plan-tracker")
 
 
+def _signal_reschedule() -> None:
+    """Touch the reschedule marker so the daemon picks up config changes."""
+    try:
+        from plan_tracker.reminder import RESCHEDULE_MARKER
+        RESCHEDULE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        RESCHEDULE_MARKER.touch()
+    except Exception:
+        pass
+
+
 def _json_response(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -205,6 +215,8 @@ async def reminder_configure(plan_name: str, config: dict) -> str:
         return _json_response({"success": False, "error": f"Plan '{plan_name}' not found"})
 
     reminders = plan.setdefault("reminders", {})
+    int_keys = {"before_due_days", "confirmation_timeout_minutes"}
+    bool_keys = {"enabled", "daily_checkin_enabled", "daily_review_enabled"}
     configurable = (
         "enabled", "before_due_days", "weekly_checkin_day", "weekly_checkin_time",
         "daily_checkin_time", "daily_review_time",
@@ -213,9 +225,23 @@ async def reminder_configure(plan_name: str, config: dict) -> str:
     )
     for key in configurable:
         if key in config:
-            reminders[key] = config[key]
+            val = config[key]
+            if key in int_keys:
+                try:
+                    val = int(val)
+                except (ValueError, TypeError):
+                    return _json_response({"success": False, "error": f"{key} must be an integer"})
+            elif key in bool_keys:
+                val = val if isinstance(val, bool) else str(val).lower() in ("true", "1", "yes")
+            elif key == "notification_channels":
+                if isinstance(val, str):
+                    val = [c.strip() for c in val.split(",")]
+                if not isinstance(val, list):
+                    return _json_response({"success": False, "error": "notification_channels must be a list"})
+            reminders[key] = val
 
     save_plan(plan_name, plan)
+    _signal_reschedule()
     return _json_response({"success": True,
         "reminders": sanitize_plan({"reminders": reminders})["reminders"]})
 
@@ -231,6 +257,7 @@ async def reminder_toggle(plan_name: str, enabled: bool) -> str:
 
     plan.setdefault("reminders", {})["enabled"] = enabled
     save_plan(plan_name, plan)
+    _signal_reschedule()
     return _json_response({"success": True, "enabled": enabled})
 
 
@@ -311,7 +338,15 @@ async def email_configure(plan_name: str, config: dict) -> str:
     email = plan.setdefault("reminders", {}).setdefault("email", {})
     for key in ("enabled", "api_url", "api_key_id", "api_secret", "recipient"):
         if key in config:
-            email[key] = config[key]
+            val = config[key]
+            if key == "api_url" and isinstance(val, str):
+                from urllib.parse import urlparse
+                parsed = urlparse(val)
+                if parsed.scheme not in ("http", "https"):
+                    return _json_response({"success": False, "error": "Email API URL must use http or https"})
+                if parsed.hostname is None:
+                    return _json_response({"success": False, "error": "Invalid email API URL"})
+            email[key] = val
 
     channels = plan["reminders"].setdefault("notification_channels", ["mcp"])
     if "email" not in channels:
@@ -350,6 +385,7 @@ async def webhook_configure(plan_name: str, config: dict) -> str:
         channels.append("webhook")
 
     save_plan(plan_name, plan)
+    _signal_reschedule()
     return _json_response({"success": True, "webhook": webhook})
 
 

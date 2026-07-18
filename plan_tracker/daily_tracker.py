@@ -369,3 +369,20 @@ def remove_for_plan(plan_name: str) -> int:
             del state[plan_name]
             return 1
     return 0
+
+
+def trim_old_entries(retention_days: int = 90) -> int:
+    """Remove daily state entries older than *retention_days*."""
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+    trimmed = 0
+    with _locked_daily_state() as state:
+        for plan_name in list(state.keys()):
+            plan_dates = state[plan_name]
+            for date_str in list(plan_dates.keys()):
+                if date_str < cutoff:
+                    del plan_dates[date_str]
+                    trimmed += 1
+            if not plan_dates:
+                del state[plan_name]
+    return trimmed

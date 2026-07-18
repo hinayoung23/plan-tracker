@@ -34,6 +34,7 @@ logger = logging.getLogger("plan_tracker.reminder")
 
 NOTIFICATION_COOLDOWN_HOURS = 12
 STATE_FILE = DATA_DIR / ".reminder_state.json"
+RESCHEDULE_MARKER = DATA_DIR / ".reschedule_needed"
 
 
 def _locked_state():
@@ -88,6 +89,8 @@ class ReminderEngine:
         self._cleanup_notification_queue()
         # Catch up on any reminders missed while the daemon was down
         self._check_all()
+        # After catch-up, schedule timeout checks for today's reviews
+        self._schedule_catchup_timeouts()
         # Schedule future events at exact configured times
         self._schedule_all_events()
         # Schedule daily notification queue cleanup
@@ -96,7 +99,32 @@ class ReminderEngine:
             target=self._scheduler.run, daemon=True, name="plan-tracker-reminder",
         )
         self._thread.start()
+        # Watch for reschedule requests from MCP server
+        self._reschedule_thread = threading.Thread(
+            target=self._reschedule_watch, daemon=True,
+            name="plan-tracker-reschedule-watch",
+        )
+        self._reschedule_thread.start()
         logger.info("Reminder engine started (event-scheduled mode)")
+
+    def _reschedule_watch(self) -> None:
+        """Periodically check for a reschedule marker file.
+
+        The MCP server touches this file when a plan is created or
+        its reminder config changes, so the running scheduler picks
+        up new plans without a daemon restart.
+        """
+        while not self._stop.is_set():
+            self._stop.wait(60)
+            if self._stop.is_set():
+                break
+            try:
+                if RESCHEDULE_MARKER.exists():
+                    RESCHEDULE_MARKER.unlink()
+                    logger.info("Reschedule marker detected — reloading events")
+                    self._schedule_all_events()
+            except OSError:
+                pass
 
     def stop(self):
         self._stop.set()
@@ -109,6 +137,80 @@ class ReminderEngine:
     def check_now(self):
         """Manually trigger an immediate check of all plans."""
         self._check_all()
+
+    def schedule_plan(self, plan_name: str) -> None:
+        """Schedule (or re-schedule) all events for a single plan.
+
+        Called from MCP server when a plan is created or its reminder
+        config changes, so the running scheduler picks it up immediately.
+        """
+        plan = load_plan(plan_name)
+        if not plan:
+            return
+        reminders = plan.get("reminders", {})
+        if not reminders.get("enabled", True):
+            return
+
+        if reminders.get("daily_checkin_enabled", True):
+            t = reminders.get("daily_checkin_time", "08:30")
+            self._schedule_event(t, self._fire_daily_checkin, plan_name)
+
+        if reminders.get("daily_review_enabled", True):
+            t = reminders.get("daily_review_time", "21:30")
+            self._schedule_event(t, self._fire_daily_review, plan_name)
+
+        # Milestone checks
+        t = reminders.get("daily_checkin_time", "08:30")
+        self._schedule_event(t, self._fire_milestone_check, plan_name, offset_minutes=5)
+
+        # Weekly check uses its own configured time
+        weekly_day = reminders.get("weekly_checkin_day", "")
+        if weekly_day:
+            wtime = reminders.get("weekly_checkin_time", "09:00")
+            # Schedule on the next matching weekday
+            self._schedule_weekly_event(wtime, weekly_day, plan_name)
+
+
+    def _schedule_catchup_timeouts(self) -> None:
+        """After startup catch-up, schedule timeout checks for any reviews
+        that were just re-sent during the evening window."""
+        index = load_index()
+        if not index or not index.get("plans"):
+            return
+        now = _local_now()
+        for entry in index["plans"]:
+            plan = load_plan(entry["name"])
+            if not plan or not plan.get("reminders", {}).get("enabled", True):
+                continue
+            reminders = plan.get("reminders", {})
+            if not reminders.get("daily_review_enabled", True):
+                continue
+            rev_time = reminders.get("daily_review_time", "21:30")
+            timeout_m = reminders.get("confirmation_timeout_minutes", 10)
+            if _in_time_window(now, rev_time):
+                self._schedule_event(rev_time, self._fire_review_timeout,
+                                    entry["name"], offset_minutes=timeout_m)
+
+    def _schedule_weekly_event(self, time_str: str, day_name: str, plan_name: str) -> None:
+        """Schedule a weekly check at *time_str* on the next *day_name*."""
+        if not _validate_time_str(time_str):
+            return
+        days_map = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                    "friday": 4, "saturday": 5, "sunday": 6}
+        target_dow = days_map.get(day_name.lower())
+        if target_dow is None:
+            return
+        now = _local_now()
+        h, m = map(int, time_str.split(":"))
+        target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        days_ahead = target_dow - now.weekday()
+        if days_ahead < 0 or (days_ahead == 0 and target <= now):
+            days_ahead += 7
+        target += timedelta(days=days_ahead)
+        callback = lambda pn: self._check_milestones_for_plan(pn)
+        self._scheduler.enterabs(target.timestamp(), 1, callback, (plan_name,))
+        logger.debug("Scheduled weekly check for %s at %s", plan_name, target.isoformat())
+
 
     # ── Scheduling ────────────────────────────────────────────────
 
@@ -137,6 +239,12 @@ class ReminderEngine:
             t = reminders.get("daily_checkin_time", "08:30")
             self._schedule_event(t, self._fire_milestone_check, entry["name"],
                                 offset_minutes=5)
+
+            # Weekly check
+            weekly_day = reminders.get("weekly_checkin_day", "")
+            if weekly_day:
+                wtime = reminders.get("weekly_checkin_time", "09:00")
+                self._schedule_weekly_event(wtime, weekly_day, entry["name"])
 
     def _schedule_event(self, time_str: str, callback, plan_name: str,
                         offset_minutes: int = 0) -> None:
@@ -293,7 +401,7 @@ class ReminderEngine:
             self._dispatch(notifications)
 
     def _cleanup_notification_queue(self) -> None:
-        """Remove delivered notifications from the queue file."""
+        """Remove delivered notifications and trim old daily state."""
         try:
             from plan_tracker.notification_queue import clear_all
             removed = clear_all()
@@ -301,6 +409,15 @@ class ReminderEngine:
                 logger.info("Cleaned up %d delivered notification(s)", removed)
         except Exception:
             logger.debug("Notification queue cleanup skipped", exc_info=True)
+
+        # Trim daily state entries older than 90 days
+        try:
+            from plan_tracker.daily_tracker import trim_old_entries
+            trimmed = trim_old_entries(retention_days=90)
+            if trimmed > 0:
+                logger.info("Trimmed %d old daily state entries", trimmed)
+        except Exception:
+            logger.debug("Daily state trim skipped", exc_info=True)
 
     def _fire_queue_cleanup(self, _plan_name: str) -> None:
         """Periodic callback to purge delivered notifications."""
