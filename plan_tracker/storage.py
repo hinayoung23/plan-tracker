@@ -50,18 +50,24 @@ def sanitize_plan(plan: dict) -> dict:
 def _resolve_data_dir() -> Path:
     """Resolve the data directory across install methods.
 
-    1. PLAN_TRACKER_DATA_DIR env var (explicit override)
-    2. ``<project-root>/data/`` (source / editable install)
-    3. ``~/mcp-servers/plan-tracker/data/`` (wheel / site-packages install)
+    1. PLAN_TRACKER_DATA_DIR env var (explicit override — set this in
+       your MCP server config for consistent cross-process paths).
+    2. ``<project-root>/data/`` (source / editable install, must
+       contain .gitkeep or plan-index.json).
+    3. ``~/mcp-servers/plan-tracker/data/`` (wheel / site-packages).
     """
     env_dir = os.environ.get("PLAN_TRACKER_DATA_DIR")
     if env_dir:
         return Path(env_dir)
 
     computed = Path(__file__).resolve().parent.parent / "data"
-    if computed.is_dir():
+    if computed.is_dir() and (
+        (computed / ".gitkeep").exists() or (computed / "plan-index.json").exists()
+    ):
         return computed
 
+    # Wheel/site-packages install — use well-known absolute path.
+    # This path is shared by daemon, MCP, CLI, and webhook_receiver.
     return Path.home() / "mcp-servers" / "plan-tracker" / "data"
 
 
@@ -140,14 +146,14 @@ def modify_plan(plan_name: str, modifier_fn) -> dict | None:
     _ensure_data_dir()
     path = DATA_DIR / f"{plan_name}.json"
     try:
-        ctx = LockedFile(path, default=None)
-    except FileNotFoundError:
+        with LockedFile(path, default=None) as current:
+            if current is None:
+                raise ValueError(f"Plan '{plan_name}' not found")
+            current["updated_at"] = datetime.now(timezone.utc).isoformat()
+            modifier_fn(current)
+            return dict(current)
+    except (FileNotFoundError, OSError):
         raise ValueError(f"Plan '{plan_name}' not found")
-    with ctx as current:
-        if current is None:
-            raise ValueError(f"Plan '{plan_name}' not found")
-        current["updated_at"] = datetime.now(timezone.utc).isoformat()
-        modifier_fn(current)
         return dict(current)
 
 
