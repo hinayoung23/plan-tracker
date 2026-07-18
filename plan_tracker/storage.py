@@ -41,7 +41,7 @@ def sanitize_plan(plan: dict) -> dict:
     if not plan:
         return plan
     email = plan.get("reminders", {}).get("email", {})
-    if email.get("api_secret"):
+    if "api_secret" in email:
         email = dict(email, api_secret="***")
         plan.setdefault("reminders", {})["email"] = email
     return plan
