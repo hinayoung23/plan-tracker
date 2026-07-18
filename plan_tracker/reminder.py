@@ -85,21 +85,14 @@ class ReminderEngine:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        # Clean up delivered notifications on startup
         self._cleanup_notification_queue()
-        # Catch up on any reminders missed while the daemon was down
         self._check_all()
-        # After catch-up, schedule timeout checks for today's reviews
         self._schedule_catchup_timeouts()
-        # Schedule future events at exact configured times
-        self._schedule_all_events()
-        # Schedule daily notification queue cleanup
-        self._schedule_event("03:00", self._fire_queue_cleanup, "__system__")
+        self._schedule_all_events()  # includes queue cleanup at 03:00
         self._thread = threading.Thread(
             target=self._scheduler.run, daemon=True, name="plan-tracker-reminder",
         )
         self._thread.start()
-        # Watch for reschedule requests from MCP server
         self._reschedule_thread = threading.Thread(
             target=self._reschedule_watch, daemon=True,
             name="plan-tracker-reschedule-watch",
@@ -171,14 +164,21 @@ class ReminderEngine:
             self._schedule_weekly_event(wtime, weekly_day, plan_name)
 
         # Wake the scheduler so it picks up new earlier events.
-        # sched sleeps until the next queued event; inserting an
-        # earlier event requires injecting a dummy immediate event.
-        self._scheduler.enter(0, 0, lambda: None)
+        # Briefly interrupt the _interruptible_sleep → the scheduler
+        # loop calls enterabs again, sees the new earlier event, and
+        # adjusts its sleep time.
+        self._stop.set()
+        # Give the scheduler loop a tick to re-evaluate
+        _time.sleep(0.01)
+        self._stop.clear()
 
 
     def _schedule_catchup_timeouts(self) -> None:
-        """After startup catch-up, schedule timeout checks for any reviews
-        that were just re-sent during the evening window."""
+        """After startup catch-up, schedule timeout checks for TODAY.
+
+        Uses absolute scheduling (now + offset) instead of _schedule_event
+        which would schedule the NEXT daily occurrence (potentially tomorrow).
+        """
         index = load_index()
         if not index or not index.get("plans"):
             return
@@ -193,8 +193,29 @@ class ReminderEngine:
             rev_time = reminders.get("daily_review_time", "21:30")
             timeout_m = reminders.get("confirmation_timeout_minutes", 10)
             if _in_time_window(now, rev_time):
-                self._schedule_event(rev_time, self._fire_review_timeout,
-                                    entry["name"], offset_minutes=timeout_m)
+                # Schedule timeout ABSOLUTELY (now + offset), not via
+                # the daily-slot-based _schedule_event which would
+                # land on tomorrow if now > today's slot.
+                target = now + timedelta(minutes=timeout_m)
+                self._scheduler.enterabs(
+                    target.timestamp(), 1,
+                    self._fire_review_timeout, (entry["name"],),
+                )
+                logger.debug("Scheduled catch-up timeout for %s at %s",
+                            entry["name"], target.isoformat())
+
+    def _fire_weekly_check(self, plan_name: str) -> None:
+        """Fire a weekly check and self-reschedule for next week."""
+        self._check_milestones_for_plan(plan_name)
+        # Self-reschedule for next week
+        plan = load_plan(plan_name)
+        if plan:
+            reminders = plan.get("reminders", {})
+            if reminders.get("enabled", True):
+                weekly_day = reminders.get("weekly_checkin_day", "")
+                if weekly_day:
+                    wtime = reminders.get("weekly_checkin_time", "09:00")
+                    self._schedule_weekly_event(wtime, weekly_day, plan_name)
 
     def _schedule_weekly_event(self, time_str: str, day_name: str, plan_name: str) -> None:
         """Schedule a weekly check at *time_str* on the next *day_name*."""
@@ -212,8 +233,8 @@ class ReminderEngine:
         if days_ahead < 0 or (days_ahead == 0 and target <= now):
             days_ahead += 7
         target += timedelta(days=days_ahead)
-        callback = lambda pn: self._check_milestones_for_plan(pn)
-        self._scheduler.enterabs(target.timestamp(), 1, callback, (plan_name,))
+        self._scheduler.enterabs(target.timestamp(), 1,
+                                self._fire_weekly_check, (plan_name,))
         logger.debug("Scheduled weekly check for %s at %s", plan_name, target.isoformat())
 
 

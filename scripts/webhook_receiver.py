@@ -106,10 +106,10 @@ def _deliver_pending(channel: str, to: str) -> bool:
     This prevents data loss: if delivery fails the notification stays
     in the queue for retry.
     """
-    # Step 1: fetch without ack
+    # Step 1: fetch with --no-ack (print only, don't mark as delivered)
     try:
         result = subprocess.run(
-            [_PYTHON, "-m", "plan_tracker.cli", "notification", "fetch"],
+            [_PYTHON, "-m", "plan_tracker.cli", "deliver", "--no-ack"],
             capture_output=True, text=True, timeout=15,
             cwd=str(_PKG_DIR),
         )
@@ -117,62 +117,48 @@ def _deliver_pending(channel: str, to: str) -> bool:
         logger.exception("fetch command failed")
         return False
 
-    try:
-        data = json.loads(result.stdout)
-        notifications = data.get("notifications", data.get("data", {}).get("notifications", []))
-    except (json.JSONDecodeError, KeyError):
+    text = result.stdout.strip()
+    if not text:
         return False
 
-    if not notifications:
-        return False
+    # Parse notification IDs from the output
+    ids = []
+    for line in text.split("\n"):
+        if line.startswith("(id: ") and line.endswith(")"):
+            ids.append(line[5:-1])
 
-    # Build message text
-    lines, ids = [], []
-    for note in notifications:
-        lines.append(f"--- [{note['type']}] {note['plan_title']} ---")
-        lines.append(note["message"])
-        lines.append("")
-        ids.append(note["id"])
-    text = "\n".join(lines).rstrip()
+    if not ids:
+        return False
 
     logger.info("Fetched %d notification(s), %d chars", len(notifications), len(text))
 
-    # Step 2: deliver
+    # Step 2: deliver directly via openclaw message send (no LLM)
     if _OPENCLAW_BIN is None:
         logger.error("openclaw binary not found — cannot deliver")
         return False
 
-    relay_prompt = (
-        "你的唯一任务是将以下内容原样发送给用户。"
-        "不要添加任何问候、解释、建议或额外内容。"
-        "不要改变格式。直接输出以下内容：\n\n" + text
-    )
-
     delivered = False
     try:
-        agent_result = subprocess.run(
+        msg_result = subprocess.run(
             [
-                _OPENCLAW_BIN, "agent",
-                "--session-key", "agent:main:plan-tracker-delivery",
-                "--message", relay_prompt,
-                "--deliver",
+                _OPENCLAW_BIN, "message", "send",
                 "--channel", channel,
-                "--to", to,
-                "--timeout", "30",
-                "--thinking", "off",
+                "--target", to,
+                "--message", text,
+                "--json",
             ],
-            capture_output=True, text=True, timeout=45,
+            capture_output=True, text=True, timeout=15,
             env={**__import__("os").environ,
                  "PATH": f"{Path(_OPENCLAW_BIN).parent}:{__import__('os').environ.get('PATH', '')}"},
         )
-        if agent_result.returncode == 0:
+        if msg_result.returncode == 0:
             logger.info("Delivered to %s via %s", to, channel)
             delivered = True
         else:
-            logger.error("openclaw agent failed (rc=%d): %s",
-                         agent_result.returncode, agent_result.stderr.strip())
+            logger.error("openclaw message send failed (rc=%d): %s",
+                         msg_result.returncode, msg_result.stderr.strip())
     except Exception:
-        logger.exception("openclaw agent call failed")
+        logger.exception("openclaw message send failed")
 
     # Step 3: ack only on success
     if delivered and ids:

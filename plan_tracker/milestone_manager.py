@@ -23,96 +23,102 @@ def _next_milestone_id(milestones: list[dict]) -> str:
 
 def add_milestone(plan_name: str, milestone: dict,
                   after_milestone_id: str | None = None) -> dict:
-    """Add a new milestone to a plan.
-
-    New milestones get a fresh ID (max+1). Existing milestones are
-    never renumbered, so external references remain valid.
-    """
+    """Add a new milestone to a plan (atomic)."""
     validate_plan_name(plan_name)
-    plan = load_plan(plan_name)
-    if plan is None:
-        raise ValueError(f"Plan '{plan_name}' not found")
-
-    milestones = plan.setdefault("milestones", [])
-
-    insert_at = len(milestones)
-    if after_milestone_id:
-        found = False
-        for i, m in enumerate(milestones):
-            if m["id"] == after_milestone_id:
-                insert_at = i + 1
-                found = True
-                break
-        if not found:
-            raise ValueError(
-                f"Milestone '{after_milestone_id}' not found in plan '{plan_name}'"
-            )
-
-    milestone["id"] = _next_milestone_id(milestones)
-    milestone.setdefault("order", insert_at + 1)
-    milestone.setdefault("status", "pending")
-    milestone.setdefault("description", "")
-    milestone.setdefault("actual_date", None)
-    milestone.setdefault("completion_pct", 0)
-    milestone.setdefault("effort_hours_estimate", max(0, milestone.get("effort_hours_estimate", 0)))
-    milestone.setdefault("effort_hours_actual", None)
-    milestone.setdefault("notes", "")
-    milestone.setdefault("checkins", [])
-
     if not milestone.get("title"):
         raise ValueError("Milestone must have a title")
     if not milestone.get("target_date"):
         raise ValueError("Milestone must have a target_date")
-    if milestone.get("effort_hours_estimate", 0) < 0:
+    effort = milestone.get("effort_hours_estimate", 0)
+    if not isinstance(effort, (int, float)) or effort < 0:
         raise ValueError("effort_hours_estimate must be >= 0")
-    if milestone["status"] not in VALID_STATUSES:
+    if milestone.get("status", "pending") not in VALID_STATUSES:
         raise ValueError(f"Invalid status: {milestone['status']}")
 
-    milestones.insert(insert_at, milestone)
-    # Update order field for display only (IDs are immutable)
-    for i, m in enumerate(milestones):
-        m["order"] = i + 1
+    result = [None]
 
-    save_plan(plan_name, plan)
-    update_index_entry(plan_name, plan)
-    return milestone
+    def _add(plan):
+        if plan is None:
+            raise ValueError(f"Plan '{plan_name}' not found")
+        milestones = plan.setdefault("milestones", [])
+        insert_at = len(milestones)
+        if after_milestone_id:
+            found = False
+            for i, m in enumerate(milestones):
+                if m["id"] == after_milestone_id:
+                    insert_at = i + 1; found = True; break
+            if not found:
+                raise ValueError(f"Milestone '{after_milestone_id}' not found")
+
+        new_ms = dict(milestone)
+        new_ms["id"] = _next_milestone_id(milestones)
+        new_ms.setdefault("order", insert_at + 1)
+        new_ms.setdefault("status", "pending")
+        new_ms.setdefault("description", "")
+        new_ms.setdefault("actual_date", None)
+        new_ms.setdefault("completion_pct", 0)
+        new_ms.setdefault("effort_hours_estimate", int(effort))
+        new_ms.setdefault("effort_hours_actual", None)
+        new_ms.setdefault("notes", "")
+        new_ms.setdefault("checkins", [])
+
+        milestones.insert(insert_at, new_ms)
+        for i, m in enumerate(milestones):
+            m["order"] = i + 1
+        result[0] = new_ms
+        return plan
+
+    modify_plan(plan_name, _add)
+    update_index_entry(plan_name, load_plan(plan_name))
+    return result[0]
 
 
 def update_milestone(plan_name: str, milestone_id: str, updates: dict) -> dict:
-    """Update milestone fields.
+    """Update milestone fields (atomic).
 
-    When status is changed to ``completed``, synced completion_pct to
-    100 and actual_date to today if not already set.
+    When status is changed to ``completed``, syncs completion_pct to
+    100 and actual_date to today.  When reopened from completed, clears
+    stale completion data so the milestone can start fresh.
     """
     validate_plan_name(plan_name)
-    plan = load_plan(plan_name)
-    if plan is None:
-        raise ValueError(f"Plan '{plan_name}' not found")
+    for key in updates:
+        if key == "status" and updates[key] not in VALID_STATUSES:
+            raise ValueError(f"Invalid status: {updates[key]}")
+        if key == "effort_hours_estimate" and updates[key] < 0:
+            raise ValueError("effort_hours_estimate must be >= 0")
 
-    milestone = _find_milestone(plan, milestone_id)
-    updatable = (
-        "title", "description", "status", "target_date",
-        "effort_hours_estimate", "notes",
-    )
-    for key in updatable:
-        if key in updates:
-            val = updates[key]
-            if key == "status" and val not in VALID_STATUSES:
-                raise ValueError(f"Invalid status: {val}")
-            if key == "effort_hours_estimate" and val < 0:
-                raise ValueError("effort_hours_estimate must be >= 0")
-            milestone[key] = val
+    result = [None]
 
-    # Sync state when manually set to completed
-    if milestone["status"] == "completed":
-        if milestone.get("completion_pct", 0) < 100:
-            milestone["completion_pct"] = 100
-        if not milestone.get("actual_date"):
-            milestone["actual_date"] = datetime.now().strftime("%Y-%m-%d")
+    def _update(plan):
+        if plan is None:
+            raise ValueError(f"Plan '{plan_name}' not found")
+        ms = _find_milestone(plan, milestone_id)
+        old_status = ms["status"]
+        updatable = ("title", "description", "status", "target_date",
+                    "effort_hours_estimate", "notes")
+        for key in updatable:
+            if key in updates:
+                ms[key] = updates[key]
 
-    save_plan(plan_name, plan)
-    update_index_entry(plan_name, plan)
-    return milestone
+        # Completed: sync state
+        if ms["status"] == "completed":
+            if ms.get("completion_pct", 0) < 100:
+                ms["completion_pct"] = 100
+            if not ms.get("actual_date"):
+                ms["actual_date"] = datetime.now().strftime("%Y-%m-%d")
+
+        # Reopened from completed: clear stale completion data
+        if old_status == "completed" and ms["status"] != "completed":
+            ms["completion_pct"] = 0
+            ms["actual_date"] = None
+            ms["effort_hours_actual"] = 0
+
+        result[0] = ms
+        return plan
+
+    modify_plan(plan_name, _update)
+    update_index_entry(plan_name, load_plan(plan_name))
+    return result[0]
 
 
 def add_checkin(

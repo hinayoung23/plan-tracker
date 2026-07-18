@@ -475,8 +475,13 @@ def cmd_ack(ids: list[str]) -> None:
     print(f"Marked {count} notification(s) as delivered")
 
 
-def cmd_deliver() -> None:
-    """Fetch, print, and ack pending notifications in one atomic step."""
+def cmd_deliver(no_ack: bool = False) -> None:
+    """Fetch, print, and optionally ack pending notifications.
+
+    With ``--no-ack``, fetches and prints without marking as delivered.
+    The caller is responsible for calling ``notification ack`` after
+    confirming the delivery was successful.
+    """
     if not is_running():
         cmd_daemon_start()
     pending = fetch_all()
@@ -489,7 +494,8 @@ def cmd_deliver() -> None:
         lines.append("")
         ids.append(note["id"])
     print("\n".join(lines).rstrip())
-    mark_delivered(ids)
+    if not no_ack:
+        mark_delivered(ids)
 
 
 # ── Setup commands (existing) ─────────────────────────────────────
@@ -940,7 +946,8 @@ def main() -> None:
     ack_parser = sub.add_parser("ack", help="Mark notifications as delivered (legacy)")
     ack_parser.add_argument("ids", nargs="+", help="Notification IDs to ack")
 
-    sub.add_parser("deliver", help="Fetch, print, and ack pending notifications atomically")
+    deliver_parser = sub.add_parser("deliver", help="Fetch, print, and optionally ack pending notifications")
+    deliver_parser.add_argument("--no-ack", action="store_true", help="Print only, don't mark as delivered")
 
     setup_parser = sub.add_parser("setup", help="One-command setup")
     setup_parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
@@ -1013,7 +1020,7 @@ def main() -> None:
     elif args.command == "ack":
         cmd_ack(args.ids)
     elif args.command == "deliver":
-        cmd_deliver()
+        cmd_deliver(no_ack=getattr(args, "no_ack", False))
     elif args.command == "cron-setup":
         cmd_cron_setup(qq_id=args.qq_id, interval_minutes=args.interval,
                        dry_run=args.dry_run, job_id=args.job_id)

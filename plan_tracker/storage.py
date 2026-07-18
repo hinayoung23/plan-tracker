@@ -117,27 +117,22 @@ def save_plan(plan_name: str, plan: dict) -> None:
 
 
 def modify_plan(plan_name: str, modifier_fn) -> dict | None:
-    """Atomically read-modify-write a plan under exclusive lock.
-
-    *modifier_fn* receives the plan dict (or None if not found) and
-    must return the modified dict (or None to abort).  Returns the
-    final plan dict as stored on disk.
-    """
+    """Atomically read-modify-write a plan under exclusive lock."""
     validate_plan_name(plan_name)
     _ensure_data_dir()
     path = DATA_DIR / f"{plan_name}.json"
-    with LockedFile(path, default=None) as plan:
-        if plan is None:
-            plan = load_plan(plan_name)
-            if plan is None:
-                return None
-        result = modifier_fn(plan)
+
+    # Load current plan under lock
+    with LockedFile(path, default=None) as current:
+        if current is None:
+            raise ValueError(f"Plan '{plan_name}' not found")
+        result = modifier_fn(current)
         if result is None:
             return None
         result["updated_at"] = datetime.now(timezone.utc).isoformat()
-        plan.clear()
-        plan.update(result)
-        return result
+        current.clear()
+        current.update(result)
+        return dict(current)
 
 
 def delete_plan_file(plan_name: str) -> bool:
