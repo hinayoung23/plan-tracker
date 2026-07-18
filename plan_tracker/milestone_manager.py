@@ -2,27 +2,40 @@
 
 from datetime import datetime, timezone
 
-from plan_tracker.storage import load_plan, save_plan, update_index_entry
+from plan_tracker.storage import load_plan, save_plan, update_index_entry, validate_plan_name
 
 VALID_STATUSES = ("pending", "in_progress", "completed", "blocked")
 VALID_MORALE = ("struggling", "neutral", "good", "great")
+
+
+def _next_milestone_id(milestones: list[dict]) -> str:
+    """Generate the next milestone ID without renumbering existing ones."""
+    max_n = 0
+    for m in milestones:
+        try:
+            n = int(m["id"].split("-")[-1])
+            if n > max_n:
+                max_n = n
+        except (ValueError, IndexError):
+            pass
+    return f"ms-{max_n + 1:03d}"
 
 
 def add_milestone(plan_name: str, milestone: dict,
                   after_milestone_id: str | None = None) -> dict:
     """Add a new milestone to a plan.
 
-    If after_milestone_id is provided, the new milestone is inserted
-    immediately after that milestone; otherwise it is appended to the end.
+    New milestones get a fresh ID (max+1). Existing milestones are
+    never renumbered, so external references remain valid.
     """
+    validate_plan_name(plan_name)
     plan = load_plan(plan_name)
     if plan is None:
         raise ValueError(f"Plan '{plan_name}' not found")
 
     milestones = plan.setdefault("milestones", [])
 
-    # Determine insert position
-    insert_at = len(milestones)  # default: append
+    insert_at = len(milestones)
     if after_milestone_id:
         found = False
         for i, m in enumerate(milestones):
@@ -35,14 +48,13 @@ def add_milestone(plan_name: str, milestone: dict,
                 f"Milestone '{after_milestone_id}' not found in plan '{plan_name}'"
             )
 
-    # Build milestone with defaults
-    milestone["id"] = ""  # placeholder, renumbered below
-    milestone.setdefault("order", 0)
+    milestone["id"] = _next_milestone_id(milestones)
+    milestone.setdefault("order", insert_at + 1)
     milestone.setdefault("status", "pending")
     milestone.setdefault("description", "")
     milestone.setdefault("actual_date", None)
     milestone.setdefault("completion_pct", 0)
-    milestone.setdefault("effort_hours_estimate", 0)
+    milestone.setdefault("effort_hours_estimate", max(0, milestone.get("effort_hours_estimate", 0)))
     milestone.setdefault("effort_hours_actual", None)
     milestone.setdefault("notes", "")
     milestone.setdefault("checkins", [])
@@ -51,21 +63,22 @@ def add_milestone(plan_name: str, milestone: dict,
         raise ValueError(f"Invalid status: {milestone['status']}")
 
     milestones.insert(insert_at, milestone)
-    _renumber_milestones(milestones)
+    # Update order field for display only (IDs are immutable)
+    for i, m in enumerate(milestones):
+        m["order"] = i + 1
+
     save_plan(plan_name, plan)
     update_index_entry(plan_name, plan)
     return milestone
 
 
-def _renumber_milestones(milestones: list[dict]) -> None:
-    """Re-assign id and order for all milestones based on list position."""
-    for i, m in enumerate(milestones):
-        m["order"] = i + 1
-        m["id"] = f"ms-{i + 1:03d}"
-
-
 def update_milestone(plan_name: str, milestone_id: str, updates: dict) -> dict:
-    """Update milestone fields."""
+    """Update milestone fields.
+
+    When status is changed to ``completed``, synced completion_pct to
+    100 and actual_date to today if not already set.
+    """
+    validate_plan_name(plan_name)
     plan = load_plan(plan_name)
     if plan is None:
         raise ValueError(f"Plan '{plan_name}' not found")
@@ -77,9 +90,19 @@ def update_milestone(plan_name: str, milestone_id: str, updates: dict) -> dict:
     )
     for key in updatable:
         if key in updates:
-            if key == "status" and updates[key] not in VALID_STATUSES:
-                raise ValueError(f"Invalid status: {updates[key]}")
-            milestone[key] = updates[key]
+            val = updates[key]
+            if key == "status" and val not in VALID_STATUSES:
+                raise ValueError(f"Invalid status: {val}")
+            if key == "effort_hours_estimate" and val < 0:
+                raise ValueError("effort_hours_estimate must be >= 0")
+            milestone[key] = val
+
+    # Sync state when manually set to completed
+    if milestone["status"] == "completed":
+        if milestone.get("completion_pct", 0) < 100:
+            milestone["completion_pct"] = 100
+        if not milestone.get("actual_date"):
+            milestone["actual_date"] = datetime.now().strftime("%Y-%m-%d")
 
     save_plan(plan_name, plan)
     update_index_entry(plan_name, plan)
@@ -96,21 +119,30 @@ def add_checkin(
     morale: str = "neutral",
 ) -> dict:
     """Record a check-in for a milestone and auto-update status."""
+    validate_plan_name(plan_name)
     plan = load_plan(plan_name)
     if plan is None:
         raise ValueError(f"Plan '{plan_name}' not found")
     if morale not in VALID_MORALE:
         raise ValueError(f"Invalid morale: {morale}")
+    if hours_spent < 0:
+        raise ValueError("hours_spent must be >= 0")
 
     milestone = _find_milestone(plan, milestone_id)
 
-    # Clamp progress
+    # Reject check-in on already-completed milestones
+    if milestone["status"] == "completed":
+        raise ValueError(
+            f"Milestone '{milestone_id}' is already completed. "
+            f"Reopen it first via milestone_update if you need to add more check-ins."
+        )
+
     progress_pct = max(0, min(100, progress_pct))
 
     checkin = {
         "date": datetime.now(timezone.utc).isoformat(),
         "progress_pct": progress_pct,
-        "hours_spent": hours_spent,
+        "hours_spent": max(0, hours_spent),
         "notes": notes,
         "blockers": blockers,
         "morale": morale,
@@ -119,9 +151,8 @@ def add_checkin(
 
     milestone["completion_pct"] = progress_pct
 
-    # Update actual hours
     current_actual = milestone.get("effort_hours_actual") or 0
-    milestone["effort_hours_actual"] = current_actual + hours_spent
+    milestone["effort_hours_actual"] = current_actual + max(0, hours_spent)
 
     # Auto-transition status
     if progress_pct >= 100:
@@ -130,7 +161,9 @@ def add_checkin(
     elif progress_pct > 0 and milestone["status"] == "pending":
         milestone["status"] = "in_progress"
 
-    if blockers:
+    # Blockers → blocked status (matching skill documentation)
+    if blockers and milestone["status"] != "completed":
+        milestone["status"] = "blocked"
         milestone["notes"] = (
             f"{milestone.get('notes', '')}\n[blocker] {blockers}".strip()
         )
@@ -138,9 +171,6 @@ def add_checkin(
     save_plan(plan_name, plan)
     update_index_entry(plan_name, plan)
 
-    # Auto-confirm today's evening review if we are inside the
-    # confirmation window — prevents spurious "incomplete" timeout
-    # notifications when the user has already checked in via the agent.
     from plan_tracker.daily_tracker import auto_confirm_from_checkin
     auto_confirm_from_checkin(plan_name, progress_pct)
 
@@ -152,7 +182,6 @@ def get_current_milestone(plan_name: str) -> dict | None:
     plan = load_plan(plan_name)
     if plan is None:
         return None
-
     for m in plan.get("milestones", []):
         if m["status"] == "in_progress":
             return m
@@ -168,8 +197,7 @@ def get_upcoming_milestones(plan_name: str, days_ahead: int = 7) -> list[dict]:
     if plan is None:
         raise ValueError(f"Plan '{plan_name}' not found")
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    today_dt = datetime.now()
+    now = datetime.now(timezone.utc)
     result = []
 
     for m in plan.get("milestones", []):
@@ -179,8 +207,10 @@ def get_upcoming_milestones(plan_name: str, days_ahead: int = 7) -> list[dict]:
         if not target:
             continue
         try:
-            target_dt = datetime.fromisoformat(target)
-            diff = (target_dt - today_dt).days
+            target_dt = datetime.fromisoformat(target).replace(tzinfo=timezone.utc)
+            # Treat target_date as end-of-day
+            target_dt = target_dt.replace(hour=23, minute=59, second=59)
+            diff = (target_dt - now).days
         except (ValueError, TypeError):
             continue
 
@@ -191,7 +221,7 @@ def get_upcoming_milestones(plan_name: str, days_ahead: int = 7) -> list[dict]:
                 "milestone_title": m["title"],
                 "status": m["status"],
                 "target_date": target,
-                "days_remaining": diff,
+                "days_remaining": max(diff, 0),
                 "completion_pct": m.get("completion_pct", 0),
                 "is_overdue": diff < 0,
                 "is_stale": _is_checkin_stale(m),

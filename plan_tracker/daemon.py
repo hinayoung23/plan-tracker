@@ -81,7 +81,7 @@ def _verify_daemon_process(pid: int) -> bool:
             ["ps", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True, timeout=5,
         )
-        return "daemon" in result.stdout
+        return "plan_tracker.daemon" in result.stdout
     except Exception:
         return False
 

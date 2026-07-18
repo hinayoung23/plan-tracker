@@ -86,9 +86,9 @@ def _local_now() -> datetime:
     return datetime.now()
 
 
-def _utc_now_iso() -> str:
-    """UTC timestamp string for persistent storage."""
-    return datetime.now(timezone.utc).isoformat()
+def _cooldown_now_iso() -> str:
+    """Local-time timestamp for cooldown state storage."""
+    return _local_now().isoformat()
 
 
 class ReminderEngine:
@@ -167,10 +167,12 @@ class ReminderEngine:
     def _schedule_event(self, time_str: str, callback, plan_name: str,
                         offset_minutes: int = 0) -> None:
         """Schedule *callback(plan_name)* at the next occurrence of HH:MM (+ offset)."""
+        if not _validate_time_str(time_str):
+            logger.warning("Invalid time string '%s' for plan '%s' — skipping", time_str, plan_name)
+            return
         try:
             h, m = map(int, time_str.split(":"))
         except (ValueError, IndexError):
-            logger.warning("Invalid time string '%s' for plan '%s'", time_str, plan_name)
             return
         now = _local_now()
         target = now.replace(hour=h, minute=m, second=0, microsecond=0)
@@ -198,7 +200,7 @@ class ReminderEngine:
                 logger.debug("Skipping daily checkin for %s — within cooldown", plan_name)
             else:
                 # Release lock before slow I/O to avoid contention
-                state[cooldown_key] = {"type": "daily_checkin", "time": _utc_now_iso()}
+                state[cooldown_key] = {"type": "daily_checkin", "time": _cooldown_now_iso()}
         # — lock released here; dispatch outside the lock ——————
 
         if state.get(cooldown_key, {}).get("time"):
@@ -231,7 +233,7 @@ class ReminderEngine:
             if not _should_notify(state, cooldown_key, "daily_review"):
                 logger.debug("Skipping daily review for %s — within cooldown", plan_name)
             else:
-                state[cooldown_key] = {"type": "daily_review", "time": _utc_now_iso()}
+                state[cooldown_key] = {"type": "daily_review", "time": _cooldown_now_iso()}
 
         if state.get(cooldown_key, {}).get("time"):
             today_state = get_today_state(plan_name)
@@ -269,7 +271,7 @@ class ReminderEngine:
             with _locked_state() as state:
                 if not _should_notify(state, key, "daily_timeout"):
                     return
-                state[key] = {"type": "daily_timeout", "time": _utc_now_iso()}
+                state[key] = {"type": "daily_timeout", "time": _cooldown_now_iso()}
             result = auto_mark_incomplete(plan_name)
             if result:
                 entry = _plan_index_entry(plan_name)
@@ -356,26 +358,29 @@ class ReminderEngine:
                 if target_dt is None:
                     continue
                 days_remaining = (target_dt - _local_now()).days
-                key = f"{entry['name']}:{m['id']}"
 
                 if days_remaining < 0:
+                    key = _cooldown_key(entry['name'], m['id'], "overdue")
                     if _should_notify(state, key, "overdue"):
                         notifications.append(_build_overdue(m, entry, days_remaining))
-                        state[key] = {"type": "overdue", "time": _utc_now_iso()}
+                        state[key] = {"type": "overdue", "time": _cooldown_now_iso()}
                 elif 0 <= days_remaining <= before_days:
+                    key = _cooldown_key(entry['name'], m['id'], "upcoming")
                     if _should_notify(state, key, "upcoming"):
                         notifications.append(_build_upcoming(m, entry, days_remaining))
-                        state[key] = {"type": "upcoming", "time": _utc_now_iso()}
-                if _is_stale(m) and _should_notify(state, key, "stale"):
-                    notifications.append(_build_stale(m, entry))
-                    state[key] = {"type": "stale", "time": _utc_now_iso()}
+                        state[key] = {"type": "upcoming", "time": _cooldown_now_iso()}
+                if _is_stale(m):
+                    key = _cooldown_key(entry['name'], m['id'], "stale")
+                    if _should_notify(state, key, "stale"):
+                        notifications.append(_build_stale(m, entry))
+                        state[key] = {"type": "stale", "time": _cooldown_now_iso()}
 
             weekly_day = reminders.get("weekly_checkin_day", "")
             if weekly_day and _is_today(weekly_day):
                 key = f"{entry['name']}:weekly"
                 if _should_notify(state, key, "weekly"):
                     notifications.append(_build_weekly(entry, plan))
-                    state[key] = {"type": "weekly", "time": _utc_now_iso()}
+                    state[key] = {"type": "weekly", "time": _cooldown_now_iso()}
 
         if notifications:
             self._dispatch(notifications)
@@ -395,35 +400,33 @@ class ReminderEngine:
             plan_title = note.get("plan_title", plan_name)
             ntype = note.get("type", "info")
 
+            has_webhook = "webhook" in channels
+            enqueued = False
+
             for ch in channels:
-                if ch == "mcp":
-                    enqueue_notification(
-                        plan_name=plan_name,
-                        ntype=ntype,
-                        message=note["message"],
-                        plan_title=plan_title,
-                        milestone_title=mtitle,
-                        milestone_id=mid,
-                    )
-                elif ch == "email":
+                if ch == "email":
                     ecfg = plan.get("reminders", {}).get("email", {})
                     if ecfg.get("enabled"):
                         EmailChannel(ecfg).send(note, plan_name, mtitle, mid)
                 elif ch == "webhook":
                     wcfg = plan.get("reminders", {}).get("webhook", {})
                     if wcfg.get("url"):
-                        # Webhook delivery, fall back to queue if it fails
                         ok = WebhookChannel(wcfg).send(note, plan_name, mtitle, mid)
                         if not ok:
-                            # Fall back to notification queue
                             enqueue_notification(
-                                plan_name=plan_name,
-                                ntype=ntype,
-                                message=note["message"],
-                                plan_title=plan_title,
-                                milestone_title=mtitle,
-                                milestone_id=mid,
+                                plan_name=plan_name, ntype=ntype,
+                                message=note["message"], plan_title=plan_title,
+                                milestone_title=mtitle, milestone_id=mid,
                             )
+                        enqueued = True
+                elif ch == "mcp" and not enqueued:
+                    # Only enqueue via MCP if no other channel already did
+                    enqueue_notification(
+                        plan_name=plan_name, ntype=ntype,
+                        message=note["message"], plan_title=plan_title,
+                        milestone_title=mtitle, milestone_id=mid,
+                    )
+                    enqueued = True
 
     # ── Daily check (used by _check_all on startup) ───────────────
 
@@ -444,7 +447,7 @@ class ReminderEngine:
             with _locked_state() as state:
                 key = f"{entry['name']}:daily_timeout"
                 if _should_notify(state, key, "daily_timeout"):
-                    state[key] = {"type": "daily_timeout", "time": _utc_now_iso()}
+                    state[key] = {"type": "daily_timeout", "time": _cooldown_now_iso()}
             notifications.append(_build_daily_timeout(entry, plan))
 
         # Atomic checkin cooldown: only one path wins the race
@@ -455,7 +458,7 @@ class ReminderEngine:
             if _in_time_window(now, chk_time):
                 with _locked_state() as state:
                     if _should_notify(state, ck_key, "daily_checkin"):
-                        state[ck_key] = {"type": "daily_checkin", "time": _utc_now_iso()}
+                        state[ck_key] = {"type": "daily_checkin", "time": _cooldown_now_iso()}
                         should_checkin = True
         if should_checkin:
             today_state = get_today_state(entry["name"])
@@ -475,7 +478,7 @@ class ReminderEngine:
             if _in_time_window(now, rev_time):
                 with _locked_state() as state:
                     if _should_notify(state, rv_key, "daily_review"):
-                        state[rv_key] = {"type": "daily_review", "time": _utc_now_iso()}
+                        state[rv_key] = {"type": "daily_review", "time": _cooldown_now_iso()}
                         should_review = True
         if should_review:
             today_state = get_today_state(entry["name"])
@@ -492,7 +495,7 @@ class ReminderEngine:
             key = f"{entry['name']}:daily_timeout"
             with _locked_state() as state:
                 if _should_notify(state, key, "daily_timeout"):
-                    state[key] = {"type": "daily_timeout", "time": _utc_now_iso()}
+                    state[key] = {"type": "daily_timeout", "time": _cooldown_now_iso()}
             result = auto_mark_incomplete(entry["name"])
             if result:
                 notifications.append(_build_daily_timeout(entry, plan))
@@ -541,7 +544,7 @@ def _in_time_window(now: datetime, time_str: str, window_hours: int = 3) -> bool
 def _save_state_after_timeout(plan_name: str, ntype: str) -> None:
     state = _load_state()
     key = f"{plan_name}:daily_timeout"
-    state[key] = {"type": ntype, "time": _utc_now_iso()}
+    state[key] = {"type": ntype, "time": _cooldown_now_iso()}
     _save_state(state)
 
 
@@ -723,10 +726,24 @@ def _build_weekly(entry, plan):
 # ── Utils ─────────────────────────────────────────────────────────
 
 def _parse_date(date_str):
+    """Parse a date string, treating date-only values as end-of-day."""
     try:
-        return datetime.fromisoformat(date_str)
+        dt = datetime.fromisoformat(date_str)
+        # If no time component (date only like "2026-12-31"), use end-of-day
+        if len(date_str) == 10 and "T" not in date_str:
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt
     except (ValueError, TypeError):
         return None
+
+
+def _validate_time_str(time_str: str) -> bool:
+    """Check that a time string is valid HH:MM."""
+    try:
+        h, m = map(int, time_str.split(":"))
+        return 0 <= h <= 23 and 0 <= m <= 59
+    except (ValueError, IndexError):
+        return False
 
 
 def _is_stale(m):
@@ -758,11 +775,23 @@ def _should_notify(state, key, ntype):
     if last.get("type") != ntype:
         return True
     try:
-        last_dt = datetime.fromisoformat(last["time"]).replace(tzinfo=None)
+        # Cooldown timestamps are stored in local time
+        last_dt = datetime.fromisoformat(last["time"])
         hours = (_local_now() - last_dt).total_seconds() / 3600
         return hours >= NOTIFICATION_COOLDOWN_HOURS
     except (ValueError, KeyError, TypeError):
         return True
+
+
+def _cooldown_key(plan_name: str, milestone_id: str, ntype: str) -> str:
+    """Build a cooldown key that includes the notification type.
+
+    This prevents type-override races where an overdue notification
+    overwrites the cooldown for an upcoming check on the same milestone.
+    """
+    if milestone_id:
+        return f"{plan_name}:{milestone_id}:{ntype}"
+    return f"{plan_name}:{ntype}"
 
 
 def _load_state():
@@ -781,4 +810,29 @@ def _save_state(state):
         with open(STATE_FILE, "w") as f:
             json.dump(state, f, indent=2)
     except OSError:
+        pass
+
+
+def remove_plan_state(plan_name: str) -> None:
+    """Remove all cooldown state entries for a plan (called on plan delete)."""
+    try:
+        if not STATE_FILE.exists():
+            return
+        with open(STATE_FILE, "r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            try:
+                state = json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                return
+            # Remove keys matching the plan
+            prefix = f"{plan_name}:"
+            keys_to_remove = [k for k in state if k.startswith(prefix)]
+            for k in keys_to_remove:
+                del state[k]
+            f.seek(0)
+            f.truncate()
+            json.dump(state, f, indent=2)
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except (OSError, ValueError):
         pass

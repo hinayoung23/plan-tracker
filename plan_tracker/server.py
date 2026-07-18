@@ -10,6 +10,7 @@ its health, restarting it automatically if it dies.
 import fcntl
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -333,7 +334,15 @@ async def webhook_configure(plan_name: str, config: dict) -> str:
 
     webhook = plan.setdefault("reminders", {}).setdefault("webhook", {})
     if "url" in config:
-        webhook["url"] = config["url"]
+        url = config["url"]
+        # Only allow localhost URLs to prevent SSRF
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return _json_response({"success": False, "error": "Webhook URL must use http or https"})
+        if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+            return _json_response({"success": False, "error": "Webhook URL must point to localhost"})
+        webhook["url"] = url
 
     channels = plan["reminders"].setdefault("notification_channels", ["mcp"])
     if "webhook" not in channels:

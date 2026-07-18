@@ -57,6 +57,7 @@ def get_today_state(plan_name: str) -> dict:
     plan_state = state.setdefault(plan_name, {})
     if today not in plan_state:
         plan_state[today] = {
+            "date": today,
             "checkin_reminded": False,
             "checkin_reminded_at": None,
             "review_reminded": False,
@@ -112,6 +113,12 @@ def record_confirmation(
             f"Must be one of: {VALID_COMPLETION_STATUSES}"
         )
 
+    # Validate plan exists
+    from plan_tracker.storage import load_plan, validate_plan_name
+    validate_plan_name(plan_name)
+    if load_plan(plan_name) is None:
+        raise ValueError(f"Plan '{plan_name}' not found")
+
     date_str = target_date or _today_str()
     state = _load_state()
     entry = state.setdefault(plan_name, {}).setdefault(date_str, {})
@@ -121,7 +128,6 @@ def record_confirmation(
     # Read the plan's configured timeout (default 10 minutes)
     timeout_minutes = 10
     try:
-        from plan_tracker.storage import load_plan
         plan = load_plan(plan_name)
         if plan:
             timeout_minutes = plan.get("reminders", {}).get(
@@ -338,11 +344,26 @@ def auto_confirm_from_checkin(plan_name: str, progress_pct: int = 0) -> bool:
     state = _load_state()
     entry = state.get(plan_name, {}).get(today, {})
 
-    # Only act when: review was sent AND user has not confirmed yet
+    # Only act when review was sent, not yet confirmed, AND within timeout window
     if not entry.get("review_reminded"):
         return False
     if entry.get("confirmed"):
         return False
+
+    # Verify we're within the confirmation window
+    from plan_tracker.storage import load_plan
+    plan = load_plan(plan_name)
+    if plan:
+        timeout_minutes = plan.get("reminders", {}).get("confirmation_timeout_minutes", 10)
+        review_reminded_at = entry.get("review_reminded_at")
+        if review_reminded_at:
+            try:
+                reminded_dt = datetime.fromisoformat(review_reminded_at).replace(tzinfo=timezone.utc)
+                elapsed = (datetime.now(timezone.utc) - reminded_dt).total_seconds() / 60
+                if elapsed > timeout_minutes:
+                    return False
+            except (ValueError, TypeError):
+                pass
 
     # Map progress to a completion status
     if progress_pct >= 100:
@@ -368,3 +389,13 @@ def auto_confirm_from_checkin(plan_name: str, progress_pct: int = 0) -> bool:
         plan_name, completion_status, progress_pct,
     )
     return True
+
+
+def remove_for_plan(plan_name: str) -> int:
+    """Remove all daily state entries for a plan (called on plan delete)."""
+    state = _load_state()
+    if plan_name in state:
+        del state[plan_name]
+        _save_state(state)
+        return 1
+    return 0

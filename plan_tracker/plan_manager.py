@@ -12,6 +12,9 @@ from plan_tracker.storage import (
     update_index_entry,
     remove_index_entry,
     load_index,
+    validate_plan_name,
+    sanitize_plan,
+    _compute_plan_status,
 )
 
 CATEGORIES = ("learning", "project", "fitness", "reading", "custom")
@@ -31,8 +34,7 @@ def create_plan(
     milestones: list[dict] | None = None,
 ) -> dict:
     """Create a new plan. Returns the created plan dict or raises ValueError."""
-    if not name or not name.replace("-", "").replace("_", "").isalnum():
-        raise ValueError("Plan name must be kebab-case alphanumeric")
+    validate_plan_name(name)
     if category not in CATEGORIES:
         raise ValueError(f"Category must be one of: {CATEGORIES}")
     if load_plan(name) is not None:
@@ -50,7 +52,7 @@ def create_plan(
         "created_at": now,
         "updated_at": now,
         "target_end_date": target_end_date,
-        "weekly_hours_target": weekly_hours_target,
+        "weekly_hours_target": max(0, weekly_hours_target),
         "milestones": _init_milestones(milestones or []),
         "reminders": {
             "enabled": True,
@@ -78,7 +80,7 @@ def create_plan(
 
     save_plan(name, plan)
     update_index_entry(name, plan)
-    return plan
+    return sanitize_plan(plan)
 
 
 def _init_milestones(raw: list[dict]) -> list[dict]:
@@ -94,7 +96,7 @@ def _init_milestones(raw: list[dict]) -> list[dict]:
         m.setdefault("description", "")
         m.setdefault("actual_date", None)
         m.setdefault("completion_pct", 0)
-        m.setdefault("effort_hours_estimate", 0)
+        m.setdefault("effort_hours_estimate", max(0, m.get("effort_hours_estimate", 0)))
         m.setdefault("effort_hours_actual", None)
         m.setdefault("notes", "")
         m.setdefault("checkins", [])
@@ -103,7 +105,11 @@ def _init_milestones(raw: list[dict]) -> list[dict]:
 
 
 def get_plan(plan_name: str) -> dict | None:
-    return load_plan(plan_name)
+    validate_plan_name(plan_name)
+    plan = load_plan(plan_name)
+    if plan is None:
+        return None
+    return sanitize_plan(plan)
 
 
 def list_plans() -> list[dict]:
@@ -112,6 +118,7 @@ def list_plans() -> list[dict]:
 
 def update_plan(plan_name: str, updates: dict) -> dict:
     """Update top-level plan fields. Raises ValueError if plan not found."""
+    validate_plan_name(plan_name)
     plan = load_plan(plan_name)
     if plan is None:
         raise ValueError(f"Plan '{plan_name}' not found")
@@ -128,14 +135,35 @@ def update_plan(plan_name: str, updates: dict) -> dict:
 
     save_plan(plan_name, plan)
     update_index_entry(plan_name, plan)
-    return plan
+    return sanitize_plan(plan)
 
 
 def delete_plan(plan_name: str) -> bool:
-    """Delete a plan and remove from index. Returns True if deleted."""
+    """Delete a plan and all associated data."""
+    validate_plan_name(plan_name)
     plan = load_plan(plan_name)
     if plan is None:
         return False
+
+    # Clean up associated data
+    try:
+        from plan_tracker.notification_queue import remove_for_plan
+        removed_q = remove_for_plan(plan_name)
+    except Exception:
+        removed_q = 0
+
+    try:
+        from plan_tracker.daily_tracker import remove_for_plan as remove_daily
+        removed_d = remove_daily(plan_name)
+    except Exception:
+        removed_d = 0
+
+    try:
+        from plan_tracker.reminder import remove_plan_state
+        remove_plan_state(plan_name)
+    except Exception:
+        pass
+
     delete_plan_file(plan_name)
     remove_index_entry(plan_name)
     return True
@@ -143,6 +171,7 @@ def delete_plan(plan_name: str) -> bool:
 
 def get_plan_analysis(plan_name: str) -> dict:
     """Compute statistics for a plan: pace, deviation, trends."""
+    validate_plan_name(plan_name)
     plan = load_plan(plan_name)
     if plan is None:
         raise ValueError(f"Plan '{plan_name}' not found")
@@ -183,6 +212,8 @@ def get_plan_analysis(plan_name: str) -> dict:
     if target:
         try:
             target_date = datetime.fromisoformat(target).replace(tzinfo=timezone.utc)
+            # Interpret target_end_date as end-of-day (23:59:59)
+            target_date = target_date.replace(hour=23, minute=59, second=59)
             created = datetime.fromisoformat(plan["created_at"])
             days_total = max((target_date - created).days, 1)
             days_remaining = max((target_date - now).days, 0)
@@ -216,22 +247,5 @@ def get_plan_analysis(plan_name: str) -> dict:
         "time_elapsed_pct": time_elapsed_pct,
         "progress_pct": progress_pct,
         "morale_trend": morale_trend[-5:],
-        "status": _plan_status(plan),
+        "status": _compute_plan_status(plan),
     }
-
-
-def _plan_status(plan: dict) -> str:
-    completed = sum(1 for m in plan.get("milestones", []) if m["status"] == "completed")
-    total = len(plan.get("milestones", [])) or 1
-    if completed == total:
-        return "completed"
-    if any(m["status"] == "blocked" for m in plan.get("milestones", [])):
-        return "behind"
-    if not any(m["status"] == "in_progress" for m in plan.get("milestones", [])):
-        return "paused"
-    # Check if any active milestone is past due
-    today = datetime.now().strftime("%Y-%m-%d")
-    for m in plan.get("milestones", []):
-        if m["status"] in ("in_progress", "pending") and m.get("target_date", "") < today:
-            return "behind"
-    return "on_track"

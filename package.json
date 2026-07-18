@@ -1,6 +1,6 @@
 {
   "name": "plan-tracker",
-  "version": "1.6.4",
+  "version": "2.0.0",
   "description": "MCP server for long-term plan tracking — milestones, daily check-ins, webhook push notifications, event-scheduled reminders, and AI-assisted progress analysis. OpenClaw plugin.",
   "main": "src/index.js",
   "keywords": ["openclaw", "plugin", "mcp", "plan", "tracker", "reminder", "productivity"],

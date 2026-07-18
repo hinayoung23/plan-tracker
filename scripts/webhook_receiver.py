@@ -96,28 +96,48 @@ def _load_delivery_config() -> dict:
 
 
 def _deliver_pending(channel: str, to: str) -> bool:
-    """Run ``plan-tracker.cli deliver`` and relay output to the user.
+    """Fetch undelivered notifications, relay to user, and ack only on success.
 
-    Returns True if at least one notification was delivered.
+    Uses a two-phase approach:
+    1. ``notification fetch`` — read without ack
+    2. Deliver via openclaw agent
+    3. On success: ``notification ack`` — commit the delivery
+
+    This prevents data loss: if delivery fails the notification stays
+    in the queue for retry.
     """
-    # Step 1: atomically fetch + ack pending notifications
+    # Step 1: fetch without ack
     try:
         result = subprocess.run(
-            [_PYTHON, "-m", "plan_tracker.cli", "deliver"],
+            [_PYTHON, "-m", "plan_tracker.cli", "notification", "fetch"],
             capture_output=True, text=True, timeout=15,
             cwd=str(_PKG_DIR),
         )
     except Exception:
-        logger.exception("deliver command failed")
+        logger.exception("fetch command failed")
         return False
 
-    text = result.stdout.strip()
-    if not text:
-        return False  # nothing to deliver
+    try:
+        data = json.loads(result.stdout)
+        notifications = data.get("notifications", data.get("data", {}).get("notifications", []))
+    except (json.JSONDecodeError, KeyError):
+        return False
 
-    logger.info("Fetched %d chars of notification text", len(text))
+    if not notifications:
+        return False
 
-    # Step 2: push to user via openclaw agent relay
+    # Build message text
+    lines, ids = [], []
+    for note in notifications:
+        lines.append(f"--- [{note['type']}] {note['plan_title']} ---")
+        lines.append(note["message"])
+        lines.append("")
+        ids.append(note["id"])
+    text = "\n".join(lines).rstrip()
+
+    logger.info("Fetched %d notification(s), %d chars", len(notifications), len(text))
+
+    # Step 2: deliver
     if _OPENCLAW_BIN is None:
         logger.error("openclaw binary not found — cannot deliver")
         return False
@@ -128,6 +148,7 @@ def _deliver_pending(channel: str, to: str) -> bool:
         "不要改变格式。直接输出以下内容：\n\n" + text
     )
 
+    delivered = False
     try:
         agent_result = subprocess.run(
             [
@@ -146,14 +167,26 @@ def _deliver_pending(channel: str, to: str) -> bool:
         )
         if agent_result.returncode == 0:
             logger.info("Delivered to %s via %s", to, channel)
-            return True
+            delivered = True
         else:
             logger.error("openclaw agent failed (rc=%d): %s",
                          agent_result.returncode, agent_result.stderr.strip())
-            return False
     except Exception:
         logger.exception("openclaw agent call failed")
-        return False
+
+    # Step 3: ack only on success
+    if delivered and ids:
+        try:
+            subprocess.run(
+                [_PYTHON, "-m", "plan_tracker.cli", "notification", "ack"] + ids,
+                capture_output=True, text=True, timeout=10,
+                cwd=str(_PKG_DIR),
+            )
+            logger.info("Acked %d notification(s)", len(ids))
+        except Exception:
+            logger.exception("ack command failed — notifications will be re-delivered")
+
+    return delivered
 
 
 # ── Smart Poller ─────────────────────────────────────────────────
@@ -262,6 +295,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
+        # Limit body size to 64 KB
+        if content_length > 65536:
+            self.send_response(413)
+            self.end_headers()
+            return
         body = self.rfile.read(content_length) if content_length else b""
 
         try:
