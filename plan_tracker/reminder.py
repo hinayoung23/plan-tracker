@@ -66,6 +66,8 @@ def _cooldown_now_iso() -> str:
     return _local_now().isoformat()
 
 
+_CLOCK_RECHECK_SECONDS = 60.0
+
 class ReminderEngine:
 
     def __init__(self):
