@@ -28,15 +28,23 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [webhook-receiver] %(levelname)s: %(message)s",
-)
-logger = logging.getLogger("webhook-receiver")
-
 _PKG_DIR = Path(__file__).resolve().parent.parent
 _PYTHON = sys.executable
 _DELIVERY_CONFIG = _PKG_DIR / "data" / "webhook_delivery.json"
+_WEBHOOK_LOG = _PKG_DIR / "data" / "webhook-stderr.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [webhook-receiver] %(levelname)s: %(message)s",
+    handlers=[
+        logging.handlers.RotatingFileHandler(
+            _WEBHOOK_LOG, maxBytes=1_048_576, backupCount=3,
+            encoding="utf-8",
+        ),
+        logging.StreamHandler(sys.stderr),
+    ],
+)
+logger = logging.getLogger("webhook-receiver")
 
 # Resolve the openclaw binary (not the shell function)
 def _resolve_openclaw_bin() -> str | None:

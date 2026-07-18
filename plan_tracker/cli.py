@@ -491,6 +491,7 @@ def cmd_deliver(no_ack: bool = False) -> None:
     for note in pending:
         lines.append(f"--- [{note['type']}] {note['plan_title']} ---")
         lines.append(note["message"])
+        lines.append(f"(id: {note['id']})")
         lines.append("")
         ids.append(note["id"])
     print("\n".join(lines).rstrip())

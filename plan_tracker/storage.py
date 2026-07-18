@@ -3,6 +3,7 @@
 All data lives under ~/mcp-servers/plan-tracker/data/ by default.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -92,46 +93,54 @@ def plan_path(plan_name: str) -> Path:
 
 
 def load_plan(plan_name: str) -> dict | None:
-    """Load a single plan, return None if not found."""
+    """Load a single plan with shared read lock, return None if not found."""
     validate_plan_name(plan_name)
     _ensure_data_dir()
     path = DATA_DIR / f"{plan_name}.json"
     if not path.exists():
         return None
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        fcntl.flock(f, fcntl.LOCK_SH)
+        try:
+            return json.load(f)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def save_plan(plan_name: str, plan: dict) -> None:
-    """Save a plan to disk with exclusive lock + restrictive permissions."""
+    """Save a plan to disk atomically."""
     validate_plan_name(plan_name)
     _ensure_data_dir()
     plan["updated_at"] = datetime.now(timezone.utc).isoformat()
+    copy = dict(plan)
+    _do_write_plan(plan_name, copy)
 
-    def _write(current):
+
+def _do_write_plan(plan_name: str, plan: dict) -> None:
+    """Write plan dict to disk under exclusive lock."""
+    path = DATA_DIR / f"{plan_name}.json"
+    with LockedFile(path, default={}) as current:
         current.clear()
         current.update(plan)
 
-    with LockedFile(DATA_DIR / f"{plan_name}.json", default={}) as current:
-        _write(current)
-
 
 def modify_plan(plan_name: str, modifier_fn) -> dict | None:
-    """Atomically read-modify-write a plan under exclusive lock."""
+    """Atomically read-modify-write a plan under exclusive lock.
+
+    *modifier_fn* receives the plan dict and modifies it IN-PLACE.
+    It must NOT return the dict (return value is ignored).
+    The plan is saved automatically after the function returns.
+    Returns the final plan dict.
+    """
     validate_plan_name(plan_name)
     _ensure_data_dir()
     path = DATA_DIR / f"{plan_name}.json"
-
-    # Load current plan under lock
     with LockedFile(path, default=None) as current:
         if current is None:
             raise ValueError(f"Plan '{plan_name}' not found")
-        result = modifier_fn(current)
-        if result is None:
-            return None
-        result["updated_at"] = datetime.now(timezone.utc).isoformat()
-        current.clear()
-        current.update(result)
+        current["updated_at"] = datetime.now(timezone.utc).isoformat()
+        modifier_fn(current)
+        # current was modified in-place — LockedFile saves it on exit
         return dict(current)
 
 

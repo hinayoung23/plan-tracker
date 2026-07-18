@@ -247,12 +247,9 @@ class ReminderEngine:
                 self._scheduler.cancel(event)
 
     def _schedule_all_events(self) -> None:
-        """Schedule the next event of each type for every enabled plan.
-        Cancels all existing events first to prevent duplicates."""
-        # Cancel all existing events
+        """Reload and re-schedule all events, then wake the scheduler."""
         for event in list(self._scheduler.queue):
             self._scheduler.cancel(event)
-        # Re-schedule queue cleanup
         self._schedule_event("03:00", self._fire_queue_cleanup, "__system__")
 
         index = load_index()
@@ -274,16 +271,19 @@ class ReminderEngine:
                 t = reminders.get("daily_review_time", "21:30")
                 self._schedule_event(t, self._fire_daily_review, entry["name"])
 
-            # Milestone checks
             t = reminders.get("daily_checkin_time", "08:30")
             self._schedule_event(t, self._fire_milestone_check, entry["name"],
                                 offset_minutes=5)
 
-            # Weekly check
             weekly_day = reminders.get("weekly_checkin_day", "")
             if weekly_day:
                 wtime = reminders.get("weekly_checkin_time", "09:00")
                 self._schedule_weekly_event(wtime, weekly_day, entry["name"])
+
+        # Wake the scheduler so it picks up new earlier events
+        self._stop.set()
+        _time.sleep(0.01)
+        self._stop.clear()
 
     def _schedule_event(self, time_str: str, callback, plan_name: str,
                         offset_minutes: int = 0) -> None:
@@ -504,13 +504,6 @@ class ReminderEngine:
                     if _should_notify(state, key, "stale"):
                         notifications.append(_build_stale(m, entry))
                         state[key] = {"type": "stale", "time": _cooldown_now_iso()}
-
-            weekly_day = reminders.get("weekly_checkin_day", "")
-            if weekly_day and _is_today(weekly_day):
-                key = f"{entry['name']}:weekly"
-                if _should_notify(state, key, "weekly"):
-                    notifications.append(_build_weekly(entry, plan))
-                    state[key] = {"type": "weekly", "time": _cooldown_now_iso()}
 
         if notifications:
             self._dispatch(notifications)

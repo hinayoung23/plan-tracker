@@ -38,8 +38,6 @@ def add_milestone(plan_name: str, milestone: dict,
     result = [None]
 
     def _add(plan):
-        if plan is None:
-            raise ValueError(f"Plan '{plan_name}' not found")
         milestones = plan.setdefault("milestones", [])
         insert_at = len(milestones)
         if after_milestone_id:
@@ -66,7 +64,6 @@ def add_milestone(plan_name: str, milestone: dict,
         for i, m in enumerate(milestones):
             m["order"] = i + 1
         result[0] = new_ms
-        return plan
 
     modify_plan(plan_name, _add)
     update_index_entry(plan_name, load_plan(plan_name))
@@ -90,8 +87,6 @@ def update_milestone(plan_name: str, milestone_id: str, updates: dict) -> dict:
     result = [None]
 
     def _update(plan):
-        if plan is None:
-            raise ValueError(f"Plan '{plan_name}' not found")
         ms = _find_milestone(plan, milestone_id)
         old_status = ms["status"]
         updatable = ("title", "description", "status", "target_date",
@@ -100,21 +95,18 @@ def update_milestone(plan_name: str, milestone_id: str, updates: dict) -> dict:
             if key in updates:
                 ms[key] = updates[key]
 
-        # Completed: sync state
         if ms["status"] == "completed":
             if ms.get("completion_pct", 0) < 100:
                 ms["completion_pct"] = 100
             if not ms.get("actual_date"):
                 ms["actual_date"] = datetime.now().strftime("%Y-%m-%d")
 
-        # Reopened from completed: clear stale completion data
         if old_status == "completed" and ms["status"] != "completed":
             ms["completion_pct"] = 0
             ms["actual_date"] = None
             ms["effort_hours_actual"] = 0
 
         result[0] = ms
-        return plan
 
     modify_plan(plan_name, _update)
     update_index_entry(plan_name, load_plan(plan_name))
@@ -138,19 +130,14 @@ def add_checkin(
         raise ValueError("hours_spent must be >= 0")
     progress_pct = max(0, min(100, progress_pct))
 
-    def _do_checkin(plan):
-        if plan is None:
-            raise ValueError(f"Plan '{plan_name}' not found")
-        milestone = _find_milestone(plan, milestone_id)
+    result_milestone = [None]
 
+    def _do_checkin(plan):
+        milestone = _find_milestone(plan, milestone_id)
         if milestone["status"] == "completed":
-            raise ValueError(
-                f"Milestone '{milestone_id}' is already completed."
-            )
+            raise ValueError(f"Milestone '{milestone_id}' is already completed.")
         if progress_pct < milestone.get("completion_pct", 0):
-            raise ValueError(
-                f"Progress cannot decrease (current: {milestone['completion_pct']}%)"
-            )
+            raise ValueError(f"Progress cannot decrease (current: {milestone['completion_pct']}%)")
 
         checkin = {
             "date": datetime.now(timezone.utc).isoformat(),
@@ -176,17 +163,11 @@ def add_checkin(
             milestone["notes"] = (
                 f"{milestone.get('notes', '')}\n[blocker] {blockers}".strip()
             )
-        return plan  # return modified plan
+        result_milestone[0] = milestone
 
-    result_checkin = None
-    try:
-        plan = modify_plan(plan_name, _do_checkin)
-    except ValueError:
-        raise
+    plan = modify_plan(plan_name, _do_checkin)
     update_index_entry(plan_name, plan)
-
-    # Extract the just-added checkin for the return value
-    milestone = _find_milestone(plan, milestone_id)
+    milestone = result_milestone[0]
 
     from plan_tracker.daily_tracker import auto_confirm_from_checkin
     auto_confirm_from_checkin(plan_name, progress_pct)
