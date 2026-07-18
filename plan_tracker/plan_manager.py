@@ -100,6 +100,13 @@ def _init_milestones(raw: list[dict]) -> list[dict]:
     """Validate and initialize milestone list with defaults."""
     result = []
     for i, m in enumerate(raw):
+        if not m.get("title"):
+            raise ValueError(f"Milestone {i+1} must have a title")
+        if not m.get("target_date"):
+            raise ValueError(f"Milestone '{m['title']}' must have a target_date")
+        effort = m.get("effort_hours_estimate", 0)
+        if not isinstance(effort, (int, float)) or effort < 0:
+            raise ValueError(f"Milestone '{m['title']}' effort_hours_estimate must be >= 0")
         if "id" not in m:
             m["id"] = f"ms-{i + 1:03d}"
         m.setdefault("status", "pending")
@@ -109,7 +116,7 @@ def _init_milestones(raw: list[dict]) -> list[dict]:
         m.setdefault("description", "")
         m.setdefault("actual_date", None)
         m.setdefault("completion_pct", 0)
-        m.setdefault("effort_hours_estimate", max(0, m.get("effort_hours_estimate", 0)))
+        m.setdefault("effort_hours_estimate", int(effort))
         m.setdefault("effort_hours_actual", None)
         m.setdefault("notes", "")
         m.setdefault("checkins", [])

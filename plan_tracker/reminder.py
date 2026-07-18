@@ -139,11 +139,14 @@ class ReminderEngine:
         self._check_all()
 
     def schedule_plan(self, plan_name: str) -> None:
-        """Schedule (or re-schedule) all events for a single plan.
+        """Re-schedule all events for a single plan immediately.
 
-        Called from MCP server when a plan is created or its reminder
-        config changes, so the running scheduler picks it up immediately.
+        Cancels old events for this plan, schedules new ones, and
+        wakes the scheduler if a new event is earlier than the next
+        queued event.
         """
+        self._cancel_plan_events(plan_name)
+
         plan = load_plan(plan_name)
         if not plan:
             return
@@ -159,16 +162,18 @@ class ReminderEngine:
             t = reminders.get("daily_review_time", "21:30")
             self._schedule_event(t, self._fire_daily_review, plan_name)
 
-        # Milestone checks
         t = reminders.get("daily_checkin_time", "08:30")
         self._schedule_event(t, self._fire_milestone_check, plan_name, offset_minutes=5)
 
-        # Weekly check uses its own configured time
         weekly_day = reminders.get("weekly_checkin_day", "")
         if weekly_day:
             wtime = reminders.get("weekly_checkin_time", "09:00")
-            # Schedule on the next matching weekday
             self._schedule_weekly_event(wtime, weekly_day, plan_name)
+
+        # Wake the scheduler so it picks up new earlier events.
+        # sched sleeps until the next queued event; inserting an
+        # earlier event requires injecting a dummy immediate event.
+        self._scheduler.enter(0, 0, lambda: None)
 
 
     def _schedule_catchup_timeouts(self) -> None:
@@ -214,8 +219,21 @@ class ReminderEngine:
 
     # ── Scheduling ────────────────────────────────────────────────
 
+    def _cancel_plan_events(self, plan_name: str) -> None:
+        """Remove all scheduled events for a plan."""
+        for event in list(self._scheduler.queue):
+            if len(event.argument) > 0 and event.argument[0] == plan_name:
+                self._scheduler.cancel(event)
+
     def _schedule_all_events(self) -> None:
-        """Schedule the next event of each type for every enabled plan."""
+        """Schedule the next event of each type for every enabled plan.
+        Cancels all existing events first to prevent duplicates."""
+        # Cancel all existing events
+        for event in list(self._scheduler.queue):
+            self._scheduler.cancel(event)
+        # Re-schedule queue cleanup
+        self._schedule_event("03:00", self._fire_queue_cleanup, "__system__")
+
         index = load_index()
         if not index or not index.get("plans"):
             return
@@ -235,7 +253,7 @@ class ReminderEngine:
                 t = reminders.get("daily_review_time", "21:30")
                 self._schedule_event(t, self._fire_daily_review, entry["name"])
 
-            # Milestone checks run once per day (a few minutes after checkin)
+            # Milestone checks
             t = reminders.get("daily_checkin_time", "08:30")
             self._schedule_event(t, self._fire_milestone_check, entry["name"],
                                 offset_minutes=5)
@@ -491,8 +509,16 @@ class ReminderEngine:
             plan_title = note.get("plan_title", plan_name)
             ntype = note.get("type", "info")
 
-            delivered = False  # Any channel successfully sent?
+            # Always enqueue once (the queue is the source of truth).
+            # Webhook/email channels serve as real-time wakeup signals
+            # for the receiver, not as the delivery mechanism itself.
+            enqueue_notification(
+                plan_name=plan_name, ntype=ntype,
+                message=note["message"], plan_title=plan_title,
+                milestone_title=mtitle, milestone_id=mid,
+            )
 
+            # Send wakeup signals via configured channels
             for ch in channels:
                 if ch == "email":
                     ecfg = plan.get("reminders", {}).get("email", {})
@@ -501,23 +527,7 @@ class ReminderEngine:
                 elif ch == "webhook":
                     wcfg = plan.get("reminders", {}).get("webhook", {})
                     if wcfg.get("url"):
-                        ok = WebhookChannel(wcfg).send(note, plan_name, mtitle, mid)
-                        if not ok:
-                            enqueue_notification(
-                                plan_name=plan_name, ntype=ntype,
-                                message=note["message"], plan_title=plan_title,
-                                milestone_title=mtitle, milestone_id=mid,
-                            )
-                        delivered = True
-                elif ch == "mcp":
-                    # MCP is a queue fallback — only enqueue if no
-                    # real-time channel (webhook/email) was attempted
-                    if not delivered:
-                        enqueue_notification(
-                            plan_name=plan_name, ntype=ntype,
-                            message=note["message"], plan_title=plan_title,
-                            milestone_title=mtitle, milestone_id=mid,
-                        )
+                        WebhookChannel(wcfg).send(note, plan_name, mtitle, mid)
 
     # ── Daily check (used by _check_all on startup) ───────────────
 
@@ -918,23 +928,10 @@ def _save_state(state):
 def remove_plan_state(plan_name: str) -> None:
     """Remove all cooldown state entries for a plan (called on plan delete)."""
     try:
-        if not STATE_FILE.exists():
-            return
-        with open(STATE_FILE, "r+") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            f.seek(0)
-            try:
-                state = json.load(f)
-            except (json.JSONDecodeError, ValueError):
-                return
-            # Remove keys matching the plan
+        with _locked_state() as state:
             prefix = f"{plan_name}:"
             keys_to_remove = [k for k in state if k.startswith(prefix)]
             for k in keys_to_remove:
                 del state[k]
-            f.seek(0)
-            f.truncate()
-            json.dump(state, f, indent=2)
-            fcntl.flock(f, fcntl.LOCK_UN)
-    except (OSError, ValueError):
+    except Exception:
         pass

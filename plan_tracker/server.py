@@ -208,7 +208,7 @@ async def checkin_add(
 @mcp.tool()
 async def reminder_configure(plan_name: str, config: dict) -> str:
     """Configure reminders for a plan. config keys: enabled, before_due_days, weekly_checkin_day, weekly_checkin_time, daily_checkin_time, daily_review_time, daily_checkin_enabled, daily_review_enabled, confirmation_timeout_minutes, notification_channels."""
-    from plan_tracker.storage import load_plan, save_plan
+    from plan_tracker.storage import load_plan, save_plan, sanitize_plan
 
     plan = load_plan(plan_name)
     if plan is None:
@@ -217,6 +217,10 @@ async def reminder_configure(plan_name: str, config: dict) -> str:
     reminders = plan.setdefault("reminders", {})
     int_keys = {"before_due_days", "confirmation_timeout_minutes"}
     bool_keys = {"enabled", "daily_checkin_enabled", "daily_review_enabled"}
+    time_keys = {"weekly_checkin_time", "daily_checkin_time", "daily_review_time"}
+    day_keys = {"weekly_checkin_day"}
+    valid_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", ""}
+    valid_channels = {"mcp", "webhook", "email"}
     configurable = (
         "enabled", "before_due_days", "weekly_checkin_day", "weekly_checkin_time",
         "daily_checkin_time", "daily_review_time",
@@ -231,13 +235,25 @@ async def reminder_configure(plan_name: str, config: dict) -> str:
                     val = int(val)
                 except (ValueError, TypeError):
                     return _json_response({"success": False, "error": f"{key} must be an integer"})
+                if val < 0:
+                    return _json_response({"success": False, "error": f"{key} must be >= 0"})
             elif key in bool_keys:
                 val = val if isinstance(val, bool) else str(val).lower() in ("true", "1", "yes")
+            elif key in time_keys:
+                from plan_tracker.reminder import _validate_time_str
+                if not _validate_time_str(str(val)):
+                    return _json_response({"success": False, "error": f"Invalid time: {val} (use HH:MM)"})
+            elif key in day_keys:
+                if str(val).lower() not in valid_days:
+                    return _json_response({"success": False, "error": f"Invalid day: {val}"})
             elif key == "notification_channels":
                 if isinstance(val, str):
                     val = [c.strip() for c in val.split(",")]
                 if not isinstance(val, list):
                     return _json_response({"success": False, "error": "notification_channels must be a list"})
+                for ch in val:
+                    if ch not in valid_channels:
+                        return _json_response({"success": False, "error": f"Unknown channel: {ch}"})
             reminders[key] = val
 
     save_plan(plan_name, plan)
@@ -249,7 +265,7 @@ async def reminder_configure(plan_name: str, config: dict) -> str:
 @mcp.tool()
 async def reminder_toggle(plan_name: str, enabled: bool) -> str:
     """Enable or disable reminders for a plan."""
-    from plan_tracker.storage import load_plan, save_plan
+    from plan_tracker.storage import load_plan, save_plan, sanitize_plan
 
     plan = load_plan(plan_name)
     if plan is None:
@@ -329,7 +345,7 @@ async def daily_status(plan_name: str) -> str:
 @mcp.tool()
 async def email_configure(plan_name: str, config: dict) -> str:
     """Configure email notifications via mail.tempbox.cn. config: enabled, api_url, api_key_id, api_secret, recipient."""
-    from plan_tracker.storage import load_plan, save_plan
+    from plan_tracker.storage import load_plan, save_plan, sanitize_plan
 
     plan = load_plan(plan_name)
     if plan is None:
@@ -362,7 +378,7 @@ async def email_configure(plan_name: str, config: dict) -> str:
 @mcp.tool()
 async def webhook_configure(plan_name: str, config: dict) -> str:
     """Configure webhook notifications for real-time push delivery. config: url (required)."""
-    from plan_tracker.storage import load_plan, save_plan
+    from plan_tracker.storage import load_plan, save_plan, sanitize_plan
 
     plan = load_plan(plan_name)
     if plan is None:

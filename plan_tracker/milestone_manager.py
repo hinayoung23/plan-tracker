@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from plan_tracker.storage import load_plan, save_plan, update_index_entry, validate_plan_name
+from plan_tracker.storage import load_plan, save_plan, modify_plan, update_index_entry, validate_plan_name
 
 VALID_STATUSES = ("pending", "in_progress", "completed", "blocked")
 VALID_MORALE = ("struggling", "neutral", "good", "great")
@@ -124,58 +124,63 @@ def add_checkin(
     blockers: str = "",
     morale: str = "neutral",
 ) -> dict:
-    """Record a check-in for a milestone and auto-update status."""
+    """Record a check-in for a milestone and auto-update status (atomic)."""
     validate_plan_name(plan_name)
-    plan = load_plan(plan_name)
-    if plan is None:
-        raise ValueError(f"Plan '{plan_name}' not found")
     if morale not in VALID_MORALE:
         raise ValueError(f"Invalid morale: {morale}")
     if hours_spent < 0:
         raise ValueError("hours_spent must be >= 0")
-
-    milestone = _find_milestone(plan, milestone_id)
-
-    # Reject check-in on already-completed milestones
-    if milestone["status"] == "completed":
-        raise ValueError(
-            f"Milestone '{milestone_id}' is already completed. "
-            f"Reopen it first via milestone_update if you need to add more check-ins."
-        )
-
     progress_pct = max(0, min(100, progress_pct))
 
-    checkin = {
-        "date": datetime.now(timezone.utc).isoformat(),
-        "progress_pct": progress_pct,
-        "hours_spent": max(0, hours_spent),
-        "notes": notes,
-        "blockers": blockers,
-        "morale": morale,
-    }
-    milestone.setdefault("checkins", []).append(checkin)
+    def _do_checkin(plan):
+        if plan is None:
+            raise ValueError(f"Plan '{plan_name}' not found")
+        milestone = _find_milestone(plan, milestone_id)
 
-    milestone["completion_pct"] = progress_pct
+        if milestone["status"] == "completed":
+            raise ValueError(
+                f"Milestone '{milestone_id}' is already completed."
+            )
+        if progress_pct < milestone.get("completion_pct", 0):
+            raise ValueError(
+                f"Progress cannot decrease (current: {milestone['completion_pct']}%)"
+            )
 
-    current_actual = milestone.get("effort_hours_actual") or 0
-    milestone["effort_hours_actual"] = current_actual + max(0, hours_spent)
+        checkin = {
+            "date": datetime.now(timezone.utc).isoformat(),
+            "progress_pct": progress_pct,
+            "hours_spent": max(0, hours_spent),
+            "notes": notes,
+            "blockers": blockers,
+            "morale": morale,
+        }
+        milestone.setdefault("checkins", []).append(checkin)
+        milestone["completion_pct"] = progress_pct
+        current_actual = milestone.get("effort_hours_actual") or 0
+        milestone["effort_hours_actual"] = current_actual + max(0, hours_spent)
 
-    # Auto-transition status
-    if progress_pct >= 100:
-        milestone["status"] = "completed"
-        milestone["actual_date"] = datetime.now().strftime("%Y-%m-%d")
-    elif progress_pct > 0 and milestone["status"] == "pending":
-        milestone["status"] = "in_progress"
+        if progress_pct >= 100:
+            milestone["status"] = "completed"
+            milestone["actual_date"] = datetime.now().strftime("%Y-%m-%d")
+        elif progress_pct > 0 and milestone["status"] == "pending":
+            milestone["status"] = "in_progress"
 
-    # Blockers → blocked status (matching skill documentation)
-    if blockers and milestone["status"] != "completed":
-        milestone["status"] = "blocked"
-        milestone["notes"] = (
-            f"{milestone.get('notes', '')}\n[blocker] {blockers}".strip()
-        )
+        if blockers and milestone["status"] != "completed":
+            milestone["status"] = "blocked"
+            milestone["notes"] = (
+                f"{milestone.get('notes', '')}\n[blocker] {blockers}".strip()
+            )
+        return plan  # return modified plan
 
-    save_plan(plan_name, plan)
+    result_checkin = None
+    try:
+        plan = modify_plan(plan_name, _do_checkin)
+    except ValueError:
+        raise
     update_index_entry(plan_name, plan)
+
+    # Extract the just-added checkin for the return value
+    milestone = _find_milestone(plan, milestone_id)
 
     from plan_tracker.daily_tracker import auto_confirm_from_checkin
     auto_confirm_from_checkin(plan_name, progress_pct)

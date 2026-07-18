@@ -24,6 +24,11 @@ from plan_tracker.storage import DATA_DIR
 PID_FILE = DATA_DIR / "daemon.pid"
 LOG_FILE = DATA_DIR / "daemon.log"
 
+# Ensure the data directory exists before configuring logging.
+# When installed as a wheel, DATA_DIR may not exist yet and the
+# RotatingFileHandler would raise FileNotFoundError on import.
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 # Rotate after ~1 MB, keep 3 backups (~4 MB total max)
 _LOG_MAX_BYTES = 1_048_576
 _LOG_BACKUP_COUNT = 3

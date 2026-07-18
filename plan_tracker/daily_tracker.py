@@ -49,10 +49,13 @@ def _today_str() -> str:
 def get_today_state(plan_name: str) -> dict:
     """Get (or create) the daily state entry for today."""
     today = _today_str()
+    # Read-only fast path: check if entry already exists
     state = _load_state()
-    plan_state = state.setdefault(plan_name, {})
-    if today not in plan_state:
-        plan_state[today] = {
+    if plan_name in state and today in state[plan_name]:
+        return state[plan_name][today]
+    # Create entry under lock
+    with _locked_daily_state() as state:
+        entry = state.setdefault(plan_name, {}).setdefault(today, {
             "date": today,
             "checkin_reminded": False,
             "checkin_reminded_at": None,
@@ -62,9 +65,8 @@ def get_today_state(plan_name: str) -> dict:
             "confirmed_at": None,
             "completion_status": None,
             "completion_notes": "",
-        }
-        _save_state(state)
-    return plan_state[today]
+        })
+    return entry
 
 
 def record_checkin_reminded(plan_name: str) -> None:
