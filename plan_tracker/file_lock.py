@@ -42,16 +42,17 @@ def LockedFile(path: Path, default: dict | list | None = None):
             # … more modifications …
         # file is atomically written on exit
     """
-    if default is None:
-        default = {}
-
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if default is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
     thread_lock = _get_thread_lock(path)
 
     with thread_lock:
         try:
             f = open(path, "r+")
         except FileNotFoundError:
+            if default is None:
+                raise FileNotFoundError(f"File not found: {path}")
+            path.parent.mkdir(parents=True, exist_ok=True)
             f = open(path, "w+")
         try:
             fcntl.flock(f, fcntl.LOCK_EX)

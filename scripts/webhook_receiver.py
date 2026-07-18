@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import logging.handlers
 import subprocess
 import sys
 import threading
@@ -138,7 +139,7 @@ def _deliver_pending(channel: str, to: str) -> bool:
     if not ids:
         return False
 
-    logger.info("Fetched %d notification(s), %d chars", len(notifications), len(text))
+    logger.info("Fetched %d notification(s), %d chars", len(ids), len(text))
 
     # Step 2: deliver directly via openclaw message send (no LLM)
     if _OPENCLAW_BIN is None:

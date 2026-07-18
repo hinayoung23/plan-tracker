@@ -163,14 +163,11 @@ class ReminderEngine:
             wtime = reminders.get("weekly_checkin_time", "09:00")
             self._schedule_weekly_event(wtime, weekly_day, plan_name)
 
-        # Wake the scheduler so it picks up new earlier events.
-        # Briefly interrupt the _interruptible_sleep → the scheduler
-        # loop calls enterabs again, sees the new earlier event, and
-        # adjusts its sleep time.
+        was_stopped = self._stop.is_set()
         self._stop.set()
-        # Give the scheduler loop a tick to re-evaluate
         _time.sleep(0.01)
-        self._stop.clear()
+        if not was_stopped:
+            self._stop.clear()
 
 
     def _schedule_catchup_timeouts(self) -> None:
@@ -205,10 +202,16 @@ class ReminderEngine:
                             entry["name"], target.isoformat())
 
     def _fire_weekly_check(self, plan_name: str) -> None:
-        """Fire a weekly check and self-reschedule for next week."""
-        self._check_milestones_for_plan(plan_name)
-        # Self-reschedule for next week
+        """Fire a weekly summary and self-reschedule for next week."""
         plan = load_plan(plan_name)
+        if plan:
+            entry = _plan_index_entry(plan_name)
+            if entry:
+                # Generate and dispatch the weekly notification
+                note = _build_weekly(entry, plan)
+                self._dispatch([note])
+
+        # Self-reschedule for next week
         if plan:
             reminders = plan.get("reminders", {})
             if reminders.get("enabled", True):
@@ -280,10 +283,13 @@ class ReminderEngine:
                 wtime = reminders.get("weekly_checkin_time", "09:00")
                 self._schedule_weekly_event(wtime, weekly_day, entry["name"])
 
-        # Wake the scheduler so it picks up new earlier events
+        # Wake the scheduler — save and restore _stop to avoid
+        # interfering with a genuine daemon shutdown in progress.
+        was_stopped = self._stop.is_set()
         self._stop.set()
         _time.sleep(0.01)
-        self._stop.clear()
+        if not was_stopped:
+            self._stop.clear()
 
     def _schedule_event(self, time_str: str, callback, plan_name: str,
                         offset_minutes: int = 0) -> None:

@@ -137,28 +137,28 @@ def list_plans() -> list[dict]:
 
 
 def update_plan(plan_name: str, updates: dict) -> dict:
-    """Update top-level plan fields. Raises ValueError if plan not found."""
+    """Update top-level plan fields (atomic)."""
     validate_plan_name(plan_name)
-    plan = load_plan(plan_name)
-    if plan is None:
-        raise ValueError(f"Plan '{plan_name}' not found")
+    for key in updates:
+        if key == "category" and updates[key] not in CATEGORIES:
+            raise ValueError(f"Invalid category: {updates[key]}")
+        if key == "weekly_hours_target" and updates[key] < 0:
+            raise ValueError("weekly_hours_target must be >= 0")
 
-    updatable = (
-        "title", "goal", "description", "category", "tags",
-        "target_end_date", "weekly_hours_target",
-    )
-    for key in updatable:
-        if key in updates:
-            val = updates[key]
-            if key == "category" and val not in CATEGORIES:
-                raise ValueError(f"Invalid category: {val}")
-            if key == "weekly_hours_target" and val < 0:
-                raise ValueError("weekly_hours_target must be >= 0")
-            plan[key] = val
+    result = [None]
+    def _do(plan):
+        updatable = ("title", "goal", "description", "category", "tags",
+                    "target_end_date", "weekly_hours_target")
+        for key in updatable:
+            if key in updates:
+                plan[key] = updates[key]
+        result[0] = plan
 
-    save_plan(plan_name, plan)
-    update_index_entry(plan_name, plan)
-    return sanitize_plan(plan)
+    modify_plan(plan_name, _do)
+    updated = result[0]
+    update_index_entry(plan_name, updated)
+    _reschedule()
+    return sanitize_plan(updated)
 
 
 def delete_plan(plan_name: str) -> bool:

@@ -74,12 +74,16 @@ def _ensure_data_dir() -> None:
 
 
 def load_index() -> dict:
-    """Load plan index (reads outside lock — callers use LockedFile for writes)."""
+    """Load plan index with shared read lock."""
     _ensure_data_dir()
     if not INDEX_FILE.exists():
         return {"plans": []}
     with open(INDEX_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        fcntl.flock(f, fcntl.LOCK_SH)
+        try:
+            return json.load(f)
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def save_index(index: dict) -> None:
@@ -135,12 +139,15 @@ def modify_plan(plan_name: str, modifier_fn) -> dict | None:
     validate_plan_name(plan_name)
     _ensure_data_dir()
     path = DATA_DIR / f"{plan_name}.json"
-    with LockedFile(path, default=None) as current:
+    try:
+        ctx = LockedFile(path, default=None)
+    except FileNotFoundError:
+        raise ValueError(f"Plan '{plan_name}' not found")
+    with ctx as current:
         if current is None:
             raise ValueError(f"Plan '{plan_name}' not found")
         current["updated_at"] = datetime.now(timezone.utc).isoformat()
         modifier_fn(current)
-        # current was modified in-place — LockedFile saves it on exit
         return dict(current)
 
 
