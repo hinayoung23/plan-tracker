@@ -362,6 +362,12 @@ async def email_configure(plan_name: str, config: dict) -> str:
                     return _json_response({"success": False, "error": "Email API URL must use http or https"})
                 if parsed.hostname is None:
                     return _json_response({"success": False, "error": "Invalid email API URL"})
+                # Only allow known email service hosts to prevent SSRF
+                allowed_hosts = {"mail.tempbox.cn", "api.sendgrid.com", "api.mailgun.net",
+                                "smtp.gmail.com", "smtp.office365.com"}
+                if parsed.hostname not in allowed_hosts and not parsed.hostname.endswith(".tempbox.cn"):
+                    return _json_response({"success": False,
+                        "error": f"Email API host '{parsed.hostname}' not allowed. Use a supported provider."})
             email[key] = val
 
     channels = plan["reminders"].setdefault("notification_channels", ["mcp"])

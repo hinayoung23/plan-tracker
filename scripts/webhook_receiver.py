@@ -42,7 +42,6 @@ logging.basicConfig(
             _WEBHOOK_LOG, maxBytes=1_048_576, backupCount=3,
             encoding="utf-8",
         ),
-        logging.StreamHandler(sys.stderr),
     ],
 )
 logger = logging.getLogger("webhook-receiver")
