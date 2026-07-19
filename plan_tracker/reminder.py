@@ -548,16 +548,16 @@ class ReminderEngine:
             plan_title = note.get("plan_title", plan_name)
             ntype = note.get("type", "info")
 
-            # Always enqueue once (the queue is the source of truth).
-            # Webhook/email channels serve as real-time wakeup signals
-            # for the receiver, not as the delivery mechanism itself.
-            enqueue_notification(
-                plan_name=plan_name, ntype=ntype,
-                message=note["message"], plan_title=plan_title,
-                milestone_title=mtitle, milestone_id=mid,
-            )
+            # Only enqueue to the global chat queue if "mcp" is explicitly
+            # configured.  Email-only and webhook-only plans should not
+            # generate queue entries that could be picked up by other channels.
+            if "mcp" in channels:
+                enqueue_notification(
+                    plan_name=plan_name, ntype=ntype,
+                    message=note["message"], plan_title=plan_title,
+                    milestone_title=mtitle, milestone_id=mid,
+                )
 
-            # Send wakeup signals via configured channels
             for ch in channels:
                 if ch == "email":
                     ecfg = plan.get("reminders", {}).get("email", {})
@@ -705,78 +705,42 @@ def _build_daily_checkin(entry: dict, plan: dict, milestone: dict | None,
                          archived: dict | None) -> dict:
     today = _today_str()
     plan_title = entry.get("title", entry["name"])
-    goal = plan.get("goal", "")
-    target_end = entry.get("target_end_date", "")
+    ms_title = milestone["title"] if milestone else ""
+    ms_pct = milestone.get("completion_pct", 0) if milestone else 0
 
-    msg_parts = [
-        f"☀ 早上好！今天是 {today}，开始新的一天吧！",
-        f"",
-        f"计划：{plan_title}",
-        f"目标：{goal}",
-        f"目标完成日期：{target_end}",
-    ]
-
-    if milestone:
-        msg_parts.append(f"")
-        msg_parts.append(f"当前里程碑：「{milestone['title']}」")
-        msg_parts.append(f"进度：{milestone.get('completion_pct', 0)}%")
-        msg_parts.append(f"目标日期：{milestone.get('target_date', '')}")
-        msg_parts.append(f"预计工时：{milestone.get('effort_hours_estimate', 0)}h")
-
-    if archived:
-        msg_parts.append(f"")
-        msg_parts.append(f"📋 昨日补确认（来自 {archived.get('from_date', '')}）：")
-        msg_parts.append(f"   状态：{archived.get('completion_status', '')}")
-        if archived.get("notes"):
-            msg_parts.append(f"   备注：{archived['notes']}")
-
-    msg_parts.append(f"")
-    msg_parts.append(f"准备好了吗？开始今天的打卡吧！")
+    msg = (
+        f"[Plan Tracker] ☀ {plan_title} — {today}\n"
+        f"当前: {ms_title} ({ms_pct}%)\n"
+        f"开始今天的打卡吧！"
+    )
 
     return {
         "plan_name": entry["name"],
         "milestone_id": milestone["id"] if milestone else "",
-        "milestone_title": milestone["title"] if milestone else "",
-        "message": "\n".join(msg_parts),
+        "milestone_title": ms_title,
+        "message": msg,
         "type": "daily_checkin",
         "plan_title": plan_title,
-        "goal": goal,
-        "milestone": milestone,
-        "archived_confirmation": archived,
     }
 
 
 def _build_daily_review(entry: dict, plan: dict, milestone: dict | None,
                         timeout_minutes: int) -> dict:
     plan_title = entry.get("title", entry["name"])
+    ms_title = f"「{milestone['title']}」" if milestone else ""
 
-    msg_parts = [
-        f"🌙 晚上好！今天计划执行得如何？",
-        f"",
-        f"计划：{plan_title}",
-    ]
-
-    if milestone:
-        progress = milestone.get("completion_pct", 0)
-        msg_parts.append(f"当前里程碑：「{milestone['title']}」（进度 {progress}%）")
-
-    msg_parts.append(f"")
-    msg_parts.append(f"请确认今天的完成情况：")
-    msg_parts.append(f"  ✅ 已完成 (completed)")
-    msg_parts.append(f"  📌 部分完成 (partial)")
-    msg_parts.append(f"  ❌ 未完成 (incomplete)")
-    msg_parts.append(f"")
-    msg_parts.append(f"⏰ 请在 {timeout_minutes} 分钟内回复，超时将自动标记为未完成。")
+    msg = (
+        f"[Plan Tracker] 🌙 {plan_title} — 今天进展如何？{ms_title}\n"
+        f"回复: 已完成/部分完成/未完成 ({timeout_minutes}分钟内)"
+    )
 
     return {
         "plan_name": entry["name"],
         "milestone_id": milestone["id"] if milestone else "",
         "milestone_title": milestone["title"] if milestone else "",
-        "message": "\n".join(msg_parts),
+        "message": msg,
         "type": "daily_review",
         "plan_title": plan_title,
-        "goal": plan.get("goal", ""),
-        "milestone": milestone,
         "timeout_minutes": timeout_minutes,
     }
 
@@ -784,19 +748,16 @@ def _build_daily_review(entry: dict, plan: dict, milestone: dict | None,
 def _build_daily_timeout(entry: dict, plan: dict) -> dict:
     plan_title = entry.get("title", entry["name"])
 
-    msg_parts = [
-        f"⏰ 超时通知",
-        f"",
-        f"计划「{plan_title}」的晚间确认已超时，系统已自动将今天的计划标记为「未完成」。",
-        f"",
-        f"如需补确认，请使用 daily_confirm 工具，确认将归档到明天的记录中。",
-    ]
+    msg = (
+        f"[Plan Tracker] ⏰ {plan_title} — 晚间确认超时，已自动标记为未完成。\n"
+        f"可使用 daily_confirm 补确认。"
+    )
 
     return {
         "plan_name": entry["name"],
         "milestone_id": "",
         "milestone_title": "",
-        "message": "\n".join(msg_parts),
+        "message": msg,
         "type": "daily_timeout",
         "plan_title": plan_title,
     }

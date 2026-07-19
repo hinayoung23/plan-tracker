@@ -3,6 +3,7 @@
 All operations protected by LockedFile (threading.Lock + fcntl.flock).
 """
 
+import fcntl
 import json
 import logging
 import uuid
@@ -50,10 +51,25 @@ def enqueue(plan_name: str, ntype: str, message: str,
         return note_id
 
 
+def _read_queue_shared() -> dict:
+    """Read queue with shared lock — faster, doesn't block other readers."""
+    QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not QUEUE_FILE.exists():
+        return {"queue": []}
+    with open(QUEUE_FILE, "r", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        try:
+            return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return {"queue": []}
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def fetch_all() -> list[dict]:
-    """Return all undelivered notifications (oldest first)."""
-    with LockedFile(QUEUE_FILE, default={"queue": []}) as q:
-        return [n for n in q["queue"] if not n["delivered"]]
+    """Return all undelivered notifications (shared read lock)."""
+    q = _read_queue_shared()
+    return [n for n in q["queue"] if not n["delivered"]]
 
 
 def mark_delivered(ids: list[str]) -> int:

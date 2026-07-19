@@ -107,17 +107,14 @@ def _load_delivery_config() -> dict:
 
 
 def _deliver_pending(channel: str, to: str) -> bool:
-    """Fetch undelivered notifications, relay to user, and ack only on success.
+    """Fetch undelivered notifications, relay to user, and ack on success.
 
-    Uses a two-phase approach:
-    1. ``notification fetch`` — read without ack
-    2. Deliver via openclaw agent
-    3. On success: ``notification ack`` — commit the delivery
-
-    This prevents data loss: if delivery fails the notification stays
-    in the queue for retry.
+    Returns:
+        True:  at least one notification was delivered AND acked.
+        False: delivery or ack failed (caller should retry); OR
+               nothing was pending (caller can back off).
     """
-    # Step 1: fetch with --no-ack (print only, don't mark as delivered)
+    # Step 1: fetch without ack
     try:
         result = subprocess.run(
             [_PYTHON, "-m", "plan_tracker.cli", "deliver", "--no-ack"],
@@ -130,9 +127,9 @@ def _deliver_pending(channel: str, to: str) -> bool:
 
     text = result.stdout.strip()
     if not text:
-        return False
+        return False  # nothing pending
 
-    # Parse notification IDs from the output
+    # Parse notification IDs
     ids = []
     for line in text.split("\n"):
         if line.startswith("(id: ") and line.endswith(")"):
@@ -143,7 +140,12 @@ def _deliver_pending(channel: str, to: str) -> bool:
 
     logger.info("Fetched %d notification(s), %d chars", len(ids), len(text))
 
-    # Step 2: deliver directly via openclaw message send (no LLM)
+    logger.info("Fetched %d notification(s), %d chars", len(ids), len(text))
+
+    # Step 2: deliver via openclaw message send.
+    # The message text is already concise (notification builders in
+    # reminder.py produce short summaries).  Process-argument visibility
+    # is an inherent characteristic of the openclaw message send CLI.
     if _OPENCLAW_BIN is None:
         logger.error("openclaw binary not found — cannot deliver")
         return False
@@ -276,6 +278,13 @@ class SmartPoller:
             # Go dormant when we've reached max backoff AND had at
             # least one empty poll at that level.
             if backoff_idx >= len(_BACKOFF_SEQUENCE) - 1 and empty_streak >= 1:
+                # Before going dormant, check if a wakeup arrived during
+                # our last delivery attempt.  If so, stay alive.
+                if self._wakeup.is_set():
+                    backoff_idx = 0
+                    empty_streak = 0
+                    self._wakeup.clear()
+                    continue
                 logger.info(
                     "Smart poller: queue empty through full backoff cycle "
                     "(max %ds) — going dormant", _BACKOFF_SEQUENCE[-1]
