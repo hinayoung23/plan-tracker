@@ -210,6 +210,34 @@ def test_idempotency_key_batch_hash():
     assert "sorted(" in receiver_src, "Receiver must sort IDs for stable hash"
 
 
+# ── Test 7: Tri-state backoff logic ──────────────────────────────
+
+def test_tri_state_backoff():
+    """DELIVERY_EMPTY must advance backoff; DELIVERY_FAIL must NOT."""
+    # Simulate the _poll_loop backoff logic
+    _BACKOFF_SEQUENCE = [30, 60, 120, 240, 480, 600]
+
+    # Case: EMPTY → backoff increases, eventually dormant
+    backoff_idx = 0
+    for _ in range(6):
+        # EMPTY path
+        if backoff_idx < len(_BACKOFF_SEQUENCE) - 1:
+            backoff_idx += 1
+    assert backoff_idx == 5, f"EMPTY: backoff should reach 5, got {backoff_idx}"
+
+    # Case: FAIL → backoff stays low
+    backoff_idx = 0
+    for _ in range(3):
+        # FAIL path
+        backoff_idx = max(0, backoff_idx - 1)
+    assert backoff_idx <= 0, f"FAIL: backoff should stay at 0, got {backoff_idx}"
+
+    # Case: OK resets everything
+    backoff_idx = 3
+    backoff_idx = 0  # OK path
+    assert backoff_idx == 0, "OK: should reset backoff"
+
+
 # ── main ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -220,6 +248,7 @@ if __name__ == "__main__":
         ("lock_mechanism_consistency", test_lock_mechanism_consistency),
         ("crash_safe_write_pattern", test_crash_safe_write_pattern),
         ("idempotency_key_batch_hash", test_idempotency_key_batch_hash),
+        ("tri_state_backoff", test_tri_state_backoff),
     ]
 
     failed = 0

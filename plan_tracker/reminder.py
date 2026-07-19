@@ -466,12 +466,20 @@ class ReminderEngine:
 
     def _cleanup_notification_queue(self) -> None:
         """Periodic maintenance: rebuild index, trim queue, trim state."""
-        # Rebuild index from plan files to fix any crash-induced inconsistency
+        # Rebuild index under lock to prevent overwriting concurrent updates
         try:
-            from plan_tracker.storage import _rebuild_index
-            rebuilt = _rebuild_index()
-            from plan_tracker.file_lock import safe_write_json
-            safe_write_json(DATA_DIR / "plan-index.json", rebuilt)
+            from plan_tracker.storage import _rebuild_index, INDEX_FILE, _lock_file_path
+            import fcntl, os
+            lock_path = _lock_file_path(INDEX_FILE)
+            lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                rebuilt = _rebuild_index()
+                from plan_tracker.file_lock import safe_write_json
+                safe_write_json(INDEX_FILE, rebuilt)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
             logger.debug("Index rebuilt: %d plans", len(rebuilt.get("plans", [])))
         except Exception:
             logger.debug("Index rebuild skipped", exc_info=True)

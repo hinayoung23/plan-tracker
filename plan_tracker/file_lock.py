@@ -80,12 +80,26 @@ def LockedFile(path: Path, default: dict | list | None = None):
 
 
 def safe_write_json(path: Path, data: dict | list) -> None:
-    """Atomic write with proper permissions."""
+    """Atomic write with proper permissions (0600 from creation)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".tmp-{os.getpid()}-{id(path)}")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
+    # Create with 0600 directly — never world-readable even momentarily
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        written = 0
+        while written < len(payload):
+            n = os.write(fd, payload[written:])
+            if n <= 0:
+                raise OSError("write returned 0")
+            written += n
+        os.fsync(fd)
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.close(fd)
+    os.replace(tmp, path)

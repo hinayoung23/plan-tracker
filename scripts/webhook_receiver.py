@@ -135,6 +135,9 @@ def _deliver_pending(channel: str, to: str):
         logger.exception("fetch command failed")
         return DELIVERY_FAIL
 
+    if result.returncode != 0:
+        logger.error("fetch command failed (rc=%d)", result.returncode)
+        return DELIVERY_FAIL
     text = result.stdout.strip()
     if not text:
         return DELIVERY_EMPTY  # nothing pending
@@ -281,9 +284,14 @@ class SmartPoller:
                 backoff_idx = 0
                 empty_streak = 0
             elif result is DELIVERY_EMPTY:
+                # Queue empty — increase backoff toward dormant
+                if backoff_idx < len(_BACKOFF_SEQUENCE) - 1:
+                    backoff_idx += 1
                 empty_streak += 1
-            else:  # DELIVERY_FAIL — treat as empty but log
-                empty_streak += 1
+            else:  # DELIVERY_FAIL — retry but don't stop
+                # Keep backoff low so we keep retrying
+                backoff_idx = max(0, backoff_idx - 1)
+                empty_streak = max(0, empty_streak - 1)
                 if backoff_idx < len(_BACKOFF_SEQUENCE) - 1:
                     backoff_idx += 1
 
