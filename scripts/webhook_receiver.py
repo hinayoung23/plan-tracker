@@ -219,89 +219,69 @@ class SmartPoller:
         self._wakeup = threading.Event()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._running = False
+        self._generation = 0  # bumped on each _ensure_running
 
     # ── public API ──────────────────────────────────────────────
 
     def wakeup(self) -> None:
-        """Signal that a notification may be available.
-
-        Safe to call from any thread.  Restarts the poller if it was
-        dormant.
-        """
+        """Signal that a notification may be available."""
         self._wakeup.set()
         self._ensure_running()
 
     # ── internals ───────────────────────────────────────────────
 
     def _ensure_running(self) -> None:
-        """Start the poller thread if one isn't already active."""
+        """Always start a new poller thread.  Old threads detect the
+        generation bump and exit gracefully."""
         with self._lock:
-            # If a thread is alive AND still in its poll loop (_running True),
-            # we don't need to start another one.
-            if self._running and self._thread and self._thread.is_alive():
-                return
-            self._running = True
+            self._generation += 1
             self._wakeup.clear()
             self._thread = threading.Thread(
                 target=self._poll_loop,
+                args=(self._generation,),
                 daemon=True,
                 name="plan-tracker-smart-poller",
             )
             self._thread.start()
-            logger.info("Smart poller started (backoff: %s)",
+            logger.info("Smart poller started gen=%d (backoff: %s)",
+                        self._generation,
                         " → ".join(f"{s}s" for s in _BACKOFF_SEQUENCE))
 
-    def _poll_loop(self) -> None:
-        """Background thread: poll with exponential backoff, stop when idle."""
+    def _poll_loop(self, my_generation: int) -> None:
+        """Background thread: poll, stop when idle. Exits if a newer
+        generation takes over."""
         backoff_idx = 0
         empty_streak = 0
 
-        while self._running:
-            # ── Check queue now ─────────────────────────────────
+        while True:
+            # ── Stale check ────────────────────────────────
+            with self._lock:
+                if self._generation != my_generation:
+                    logger.debug("Smart poller gen=%d superseded", my_generation)
+                    return
+
+            # ── Check queue ────────────────────────────────
             delivered = _deliver_pending(self._channel, self._to)
 
             if delivered:
                 backoff_idx = 0
                 empty_streak = 0
-                logger.debug("Smart poller: delivered, backoff reset")
             else:
                 empty_streak += 1
                 if backoff_idx < len(_BACKOFF_SEQUENCE) - 1:
                     backoff_idx += 1
-                logger.debug("Smart poller: empty streak=%d, backoff_idx=%d",
-                             empty_streak, backoff_idx)
 
-            # ── Stop condition ──────────────────────────────────
-            # Go dormant when we've reached max backoff AND had at
-            # least one empty poll at that level.
+            # ── Stop condition ─────────────────────────────
             if backoff_idx >= len(_BACKOFF_SEQUENCE) - 1 and empty_streak >= 1:
-                # Set _running=False FIRST so _ensure_running can
-                # start a new thread if a wakeup arrives.  Then check
-                # _wakeup — if set, a new thread is already starting
-                # and we can safely exit.
-                with self._lock:
-                    self._running = False
-                if self._wakeup.is_set():
-                    # _ensure_running will start a new thread.
-                    self._wakeup.clear()
                 logger.info(
-                    "Smart poller: queue empty through full backoff cycle "
-                    "(max %ds) — going dormant", _BACKOFF_SEQUENCE[-1]
-                )
-                break
+                    "Smart poller gen=%d: queue empty through full backoff — "
+                    "going dormant", my_generation)
+                return
 
-            # ── Wait (interruptible by wakeup) ──────────────────
+            # ── Wait ───────────────────────────────────────
             timeout = _BACKOFF_SEQUENCE[backoff_idx]
             self._wakeup.wait(timeout=timeout)
             self._wakeup.clear()
-
-        # Only clear _thread if we're still the active thread reference,
-        # and do it under lock to avoid races with _ensure_running.
-        with self._lock:
-            if self._thread is threading.current_thread():
-                self._thread = None
-        logger.info("Smart poller stopped (dormant)")
 
 
 # ── HTTP server ──────────────────────────────────────────────────

@@ -3,8 +3,6 @@
 Validates plan structure, manages plan index, delegates milestone operations.
 """
 
-import json
-import os
 from datetime import datetime, timezone
 
 from plan_tracker.storage import (
@@ -92,24 +90,14 @@ def create_plan(
         },
     }
 
-    # Atomic create: O_CREAT|O_EXCL either creates the file or fails
-    # with FileExistsError.  No window for concurrent overwrites.
-    from plan_tracker import storage
-    path = storage.DATA_DIR / f"{name}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, b"{}")
-        os.close(fd)
-    except FileExistsError:
-        raise ValueError(f"Plan '{name}' already exists")
-
-    # Populate under lock (plan+index are written atomically within
-    # modify_plan_and_index — no separate empty-file pre-creation).
+    # Atomic create: modify_plan_and_index with create=True handles
+    # the file creation, population, and index update under dual locks.
     def _populate(plan):
+        if plan.get("name"):
+            raise ValueError(f"Plan '{name}' already exists")
         plan.update(plan_data)
 
-    plan = modify_plan_and_index(name, _populate)
+    plan = modify_plan_and_index(name, _populate, create=True)
     _reschedule()
     return sanitize_plan(plan)
 

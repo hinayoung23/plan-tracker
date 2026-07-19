@@ -548,14 +548,16 @@ class ReminderEngine:
             plan_title = note.get("plan_title", plan_name)
             ntype = note.get("type", "info")
 
-            # Always enqueue once. The queue is the universal delivery
-            # data store. Webhook/email channels serve as real-time
-            # wakeup signals, not as independent delivery paths.
-            enqueue_notification(
-                plan_name=plan_name, ntype=ntype,
-                message=note["message"], plan_title=plan_title,
-                milestone_title=mtitle, milestone_id=mid,
-            )
+            # Enqueue only for queue-based channels (mcp, webhook).
+            # Email is direct-send only and should not generate
+            # queue entries that other receivers might consume.
+            queue_channels = {"mcp", "webhook"}
+            if any(ch in channels for ch in queue_channels):
+                enqueue_notification(
+                    plan_name=plan_name, ntype=ntype,
+                    message=note["message"], plan_title=plan_title,
+                    milestone_title=mtitle, milestone_id=mid,
+                )
 
             for ch in channels:
                 if ch == "email":

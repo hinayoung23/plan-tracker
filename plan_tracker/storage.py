@@ -159,26 +159,74 @@ def modify_plan(plan_name: str, modifier_fn) -> dict | None:
         raise ValueError(f"Plan '{plan_name}' not found")
 
 
-def modify_plan_and_index(plan_name: str, modifier_fn) -> dict:
-    """Write plan first, then index.  If index write fails the plan
-    body is correct and the index can be rebuilt from it."""
+def modify_plan_and_index(plan_name: str, modifier_fn,
+                         create: bool = False) -> dict:
+    """Atomic plan + index update with BOTH locks held simultaneously.
+
+    Uses raw fcntl to hold the plan file lock AND index file lock at
+    the same time, so no concurrent writer can observe body-index
+    disagreement.  Plan writes first, then index.
+    """
     validate_plan_name(plan_name)
     _ensure_data_dir()
     plan_path = DATA_DIR / f"{plan_name}.json"
 
+    # Open plan file (hold fcntl lock manually)
     try:
-        with LockedFile(plan_path, default=None) as plan:
-            if plan is None:
-                raise ValueError(f"Plan '{plan_name}' not found")
-            plan["updated_at"] = datetime.now(timezone.utc).isoformat()
-            modifier_fn(plan)
-            result = dict(plan)
-        # Plan is now saved.  Update index separately.
-        with LockedFile(INDEX_FILE, default={"plans": []}) as index:
-            _do_update_index_entry(plan_name, result, index)
-        return result
+        plan_fd = open(plan_path, "r+")
     except FileNotFoundError:
-        raise ValueError(f"Plan '{plan_name}' not found")
+        if create:
+            plan_fd = open(plan_path, "w+")
+        else:
+            raise ValueError(f"Plan '{plan_name}' not found")
+    try:
+        fcntl.flock(plan_fd, fcntl.LOCK_EX)
+        plan_fd.seek(0)
+        try:
+            plan = json.load(plan_fd)
+        except (json.JSONDecodeError, ValueError):
+            plan = {}
+
+        plan["updated_at"] = datetime.now(timezone.utc).isoformat()
+        modifier_fn(plan)
+
+        # Open index file (hold fcntl lock manually too)
+        index_path = INDEX_FILE
+        try:
+            index_fd = open(index_path, "r+")
+        except FileNotFoundError:
+            index_fd = open(index_path, "w+")
+        try:
+            fcntl.flock(index_fd, fcntl.LOCK_EX)
+            index_fd.seek(0)
+            try:
+                index = json.load(index_fd)
+            except (json.JSONDecodeError, ValueError):
+                index = {"plans": []}
+            _do_update_index_entry(plan_name, plan, index)
+
+            # Write index FIRST (fails safe: plan still correct)
+            index_fd.seek(0)
+            index_fd.truncate()
+            json.dump(index, index_fd, ensure_ascii=False, indent=2)
+            index_fd.flush()
+            os.fsync(index_fd.fileno())
+        finally:
+            fcntl.flock(index_fd, fcntl.LOCK_UN)
+            index_fd.close()
+
+        # Write plan SECOND (both are now committed)
+        plan_fd.seek(0)
+        plan_fd.truncate()
+        json.dump(plan, plan_fd, ensure_ascii=False, indent=2)
+        plan_fd.flush()
+        os.fsync(plan_fd.fileno())
+        result = dict(plan)
+    finally:
+        fcntl.flock(plan_fd, fcntl.LOCK_UN)
+        plan_fd.close()
+
+    return result
 
 
 def _do_update_index_entry(plan_name: str, plan: dict, index: dict) -> None:
