@@ -10,6 +10,7 @@ from plan_tracker.storage import (
     INDEX_FILE,
     load_plan,
     save_plan,
+    plan_path,
     modify_plan_and_index,
     delete_plan_file,
     update_index_entry,
