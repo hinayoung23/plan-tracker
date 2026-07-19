@@ -232,12 +232,9 @@ class SmartPoller:
     # ── internals ───────────────────────────────────────────────
 
     def _ensure_running(self) -> None:
-        """Start a poller thread if none is active."""
+        """Start a poller thread.  Old threads detect generation bump
+        and exit; the deliver_lock ensures only one delivers at a time."""
         with self._lock:
-            if self._thread and self._thread.is_alive():
-                # Thread already active — just set wakeup and return.
-                # The active thread will pick up the notification.
-                return
             self._generation += 1
             self._wakeup.clear()
             self._thread = threading.Thread(
@@ -247,9 +244,7 @@ class SmartPoller:
                 name="plan-tracker-smart-poller",
             )
             self._thread.start()
-            logger.info("Smart poller started gen=%d (backoff: %s)",
-                        self._generation,
-                        " → ".join(f"{s}s" for s in _BACKOFF_SEQUENCE))
+            logger.info("Smart poller started gen=%d", self._generation)
 
     def _poll_loop(self, my_generation: int) -> None:
         """Background thread: poll, stop when idle. Exits if a newer

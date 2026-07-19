@@ -203,11 +203,14 @@ def delete_plan(plan_name: str) -> bool:
         # Now hold index lock for the index update
         with LockedFile(INDEX_FILE, default={"plans": []}) as index:
             index["plans"] = [p for p in index["plans"] if p["name"] != plan_name]
-            # Plan lock still held — unlink is safe
-            os.close(plan_fd)
-            delete_plan_file(plan_name)
 
-        # Clean up associated data (outside locks)
+        # Index lock released, plan lock still held.  Unlink the file
+        # while we still hold the plan lock.
+        delete_plan_file(plan_name)
+        # Now safe to release the plan lock
+        os.close(plan_fd)
+
+        # Clean up associated data
         try:
             from plan_tracker.notification_queue import remove_for_plan
             remove_for_plan(plan_name)

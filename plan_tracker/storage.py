@@ -171,20 +171,24 @@ def modify_plan_and_index(plan_name: str, modifier_fn,
     _ensure_data_dir()
     plan_path = DATA_DIR / f"{plan_name}.json"
 
-    # Open plan file with dual fcntl locks (plan + index).
+    # Acquire lock via a separate lock file.  Using the data file
+    # directly for flock breaks with atomic rename (rename changes
+    # the inode, so other threads' open fds point to stale data).
+    plan_lock = _lock_file_path(plan_path)
+    plan_lock.parent.mkdir(parents=True, exist_ok=True)
+    plan_lock_fd = os.open(plan_lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        plan_fd = os.open(plan_path, os.O_RDWR)
-    except FileNotFoundError:
-        if create:
-            plan_fd = os.open(plan_path, os.O_RDWR | os.O_CREAT, 0o600)
-        else:
-            raise ValueError(f"Plan '{plan_name}' not found")
-    os.fchmod(plan_fd, 0o600)
-    try:
-        fcntl.flock(plan_fd, fcntl.LOCK_EX)
-        plan_data = _read_full(plan_fd)
+        fcntl.flock(plan_lock_fd, fcntl.LOCK_EX)
+
+        # Read plan (fresh open each time to get latest inode)
         try:
+            plan_data = plan_path.read_bytes()
             plan = json.loads(plan_data) if plan_data else {}
+        except FileNotFoundError:
+            if create:
+                plan = {}
+            else:
+                raise ValueError(f"Plan '{plan_name}' not found")
         except (json.JSONDecodeError, ValueError):
             if create:
                 plan = {}
@@ -194,56 +198,64 @@ def modify_plan_and_index(plan_name: str, modifier_fn,
         plan["updated_at"] = datetime.now(timezone.utc).isoformat()
         modifier_fn(plan)
 
-        # Open + lock index (both plan and index locks held)
-        index_path = INDEX_FILE
+        # Lock + read index
+        idx_lock = _lock_file_path(INDEX_FILE)
+        idx_lock_fd = os.open(idx_lock, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            index_fd = os.open(index_path, os.O_RDWR)
-        except FileNotFoundError:
-            index_fd = os.open(index_path, os.O_RDWR | os.O_CREAT, 0o600)
-        os.fchmod(index_fd, 0o600)
-        try:
-            fcntl.flock(index_fd, fcntl.LOCK_EX)
-            idx_data = _read_full(index_fd)
+            fcntl.flock(idx_lock_fd, fcntl.LOCK_EX)
             try:
+                idx_data = INDEX_FILE.read_bytes()
                 index = json.loads(idx_data) if idx_data else {"plans": []}
-            except (json.JSONDecodeError, ValueError):
-                # Attempt to rebuild from plan files
+            except (FileNotFoundError, json.JSONDecodeError, ValueError):
                 index = _rebuild_index()
             _do_update_index_entry(plan_name, plan, index)
 
-            # Write PLAN first (if this fails, index is unchanged)
-            _write_and_fsync(plan_fd, plan)
-            # Write INDEX second
-            _write_and_fsync(index_fd, index)
+            # Write plan first (atomic tmp+rename), then index
+            _atomic_write(plan_path, plan)
+            _atomic_write(INDEX_FILE, index)
         finally:
-            fcntl.flock(index_fd, fcntl.LOCK_UN)
-            os.close(index_fd)
+            fcntl.flock(idx_lock_fd, fcntl.LOCK_UN)
+            os.close(idx_lock_fd)
         result = dict(plan)
     finally:
-        fcntl.flock(plan_fd, fcntl.LOCK_UN)
-        os.close(plan_fd)
+        fcntl.flock(plan_lock_fd, fcntl.LOCK_UN)
+        os.close(plan_lock_fd)
 
     return result
 
 
-def _write_and_fsync(fd: int, data: dict) -> None:
-    """Write *data* to *fd* crash-safely.
+def _atomic_write(path: Path, data: dict) -> None:
+    """Crash-safe atomic write: tmp file → fsync → rename.
 
-    Writes BEFORE truncating — if the write or fsync fails, the file
-    still contains the old valid data.  Loops on os.write to handle
-    partial writes.
+    The caller must hold the lock file for *path* to prevent
+    concurrent writers from reading a stale inode after rename.
     """
+    tmp_path = path.with_suffix(f".tmp-{os.getpid()}")
     payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-    os.lseek(fd, 0, os.SEEK_SET)
-    written = 0
-    while written < len(payload):
-        n = os.write(fd, payload[written:])
-        if n < 0:
-            raise OSError("write failed")
-        written += n
-    os.fsync(fd)
-    # Only truncate after confirmed write+fsync
-    os.ftruncate(fd, len(payload))
+    try:
+        tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            written = 0
+            while written < len(payload):
+                n = os.write(tmp_fd, payload[written:])
+                if n <= 0:
+                    raise OSError("write returned 0")
+                written += n
+            os.fsync(tmp_fd)
+        finally:
+            os.close(tmp_fd)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _lock_file_path(data_path: Path) -> Path:
+    """Return the lock-file path for a data file."""
+    return data_path.with_suffix(data_path.suffix + ".lock")
 
 
 def _read_full(fd: int, max_bytes: int = 100_000_000) -> bytes:
@@ -261,34 +273,51 @@ def _read_full(fd: int, max_bytes: int = 100_000_000) -> bytes:
 
 
 def _rebuild_index() -> dict:
-    """Rebuild the plan index from plan files on disk."""
+    """Rebuild the plan index from plan files on disk.
+
+    Only includes JSON files that look like plan documents
+    (have 'name' and 'milestones' fields matching the filename).
+    System files (daily_state, notification_queue, etc.) are excluded.
+    """
+    SYSTEM_FILES = {
+        "plan-index.json", "notification_queue.json", "daily_state.json",
+        ".reminder_state.json", "webhook_delivery.json",
+    }
     result: dict = {"plans": []}
     try:
         for path in sorted(DATA_DIR.glob("*.json")):
-            if path.name == "plan-index.json":
+            if path.name in SYSTEM_FILES:
                 continue
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     plan = json.load(f)
-                name = plan.get("name", path.stem)
-                if not name:
-                    continue
-                milestones = plan.get("milestones", [])
-                completed = sum(1 for m in milestones if m["status"] == "completed")
-                total = len(milestones)
-                result["plans"].append({
-                    "name": name,
-                    "title": plan.get("title", name),
-                    "category": plan.get("category", "custom"),
-                    "target_end_date": plan.get("target_end_date", ""),
-                    "total_milestones": total,
-                    "completed_milestones": completed,
-                    "overall_progress_pct": round(completed / total * 100) if total else 0,
-                    "status": _compute_plan_status(plan),
-                    "updated_at": plan.get("updated_at", ""),
-                })
-            except (json.JSONDecodeError, OSError, KeyError):
+            except (json.JSONDecodeError, OSError):
                 continue
+            # Validate: must be a dict with matching name field
+            if not isinstance(plan, dict):
+                continue
+            name = plan.get("name", "")
+            if not name or not isinstance(name, str):
+                continue
+            # Filename must match plan name
+            if path.stem != name:
+                continue
+            milestones = plan.get("milestones", [])
+            if not isinstance(milestones, list):
+                continue
+            completed = sum(1 for m in milestones if isinstance(m, dict) and m.get("status") == "completed")
+            total = len(milestones)
+            result["plans"].append({
+                "name": name,
+                "title": plan.get("title", name),
+                "category": plan.get("category", "custom"),
+                "target_end_date": plan.get("target_end_date", ""),
+                "total_milestones": total,
+                "completed_milestones": completed,
+                "overall_progress_pct": round(completed / total * 100) if total else 0,
+                "status": _compute_plan_status(plan),
+                "updated_at": plan.get("updated_at", ""),
+            })
     except OSError:
         pass
     return result
