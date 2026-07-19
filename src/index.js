@@ -8,27 +8,19 @@ const PLUGIN = {
     "MCP server for long-term plan tracking with milestones, check-ins, and scheduled reminders.",
 };
 
-const MAX_STDIN_BYTES = 65536; // 64 KiB
+const MAX_STDIN_BYTES = 65536;
 
 function validatePayload(data) {
-  if (!data || typeof data !== "object") {
+  if (!data || typeof data !== "object")
     throw new Error("payload must be a JSON object");
-  }
-  if (!data.channel || typeof data.channel !== "string") {
+  if (!data.channel || typeof data.channel !== "string")
     throw new Error("payload.channel is required (string)");
-  }
-  if (!data.target || typeof data.target !== "string") {
+  if (!data.target || typeof data.target !== "string")
     throw new Error("payload.target is required (string)");
-  }
-  if (!data.message || typeof data.message !== "string") {
+  if (!data.message || typeof data.message !== "string")
     throw new Error("payload.message is required (string)");
-  }
-  if (data.message.length > 32768) {
+  if (data.message.length > 32768)
     throw new Error("payload.message too long (max 32 KiB)");
-  }
-  if (data.idempotencyKey && typeof data.idempotencyKey !== "string") {
-    throw new Error("payload.idempotencyKey must be a string");
-  }
 }
 
 function readStdin() {
@@ -49,16 +41,12 @@ function readStdin() {
   });
 }
 
-// ── CLI command handler ──────────────────────────────────────────
-async function deliverCommand() {
+async function deliverNotification() {
   let raw;
-  try {
-    raw = await readStdin();
-  } catch (e) {
+  try { raw = await readStdin(); } catch (e) {
     console.error(JSON.stringify({ ok: false, error: e.message }));
     process.exit(1);
   }
-
   let payload;
   try {
     payload = JSON.parse(raw);
@@ -93,20 +81,28 @@ module.exports = {
   ...PLUGIN,
 
   register(api) {
-    // Registrar function: receives a register() callback.
-    // OpenClaw 2026.7.1 requires this pattern with explicit commands metadata.
-    api.registerCli((register) => {
-      register({
-        name: "plan-tracker-deliver",
-        description: "Deliver a plan-tracker notification via stdin (privacy-safe)",
-        commands: {
-          default: {
-            description: "Read JSON payload from stdin and deliver via Gateway send()",
-            run: deliverCommand,
+    api.registerCli(
+      // Registrar function — receives Commander context
+      (ctx) => {
+        ctx.program
+          .command("plan-tracker-deliver")
+          .description("Deliver a plan-tracker notification via stdin (privacy-safe)")
+          .action(async () => {
+            await deliverNotification();
+          });
+      },
+      // Metadata for lazy/eager CLI registration
+      {
+        commands: ["plan-tracker-deliver"],
+        descriptors: [
+          {
+            name: "plan-tracker-deliver",
+            description:
+              "Deliver a plan-tracker notification via stdin (privacy-safe)",
           },
-        },
-      });
-    });
+        ],
+      },
+    );
 
     return PLUGIN;
   },

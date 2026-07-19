@@ -40,3 +40,4 @@ data/daemon.lock
 
 # Runtime markers
 data/.reschedule_needed
+data/*.lock

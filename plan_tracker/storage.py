@@ -80,16 +80,24 @@ def _ensure_data_dir() -> None:
 
 
 def load_index() -> dict:
-    """Load plan index with shared read lock."""
+    """Load plan index with shared read lock via lock file."""
     _ensure_data_dir()
     if not INDEX_FILE.exists():
         return {"plans": []}
-    with open(INDEX_FILE, "r", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
+    lock_path = _lock_file_path(INDEX_FILE)
+    try:
+        lock_fd = os.open(lock_path, os.O_RDONLY | os.O_CREAT, 0o600)
+    except OSError:
+        return {"plans": []}
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_SH)
         try:
-            return json.load(f)
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            return json.loads(INDEX_FILE.read_bytes())
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {"plans": []}
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def save_index(index: dict) -> None:
