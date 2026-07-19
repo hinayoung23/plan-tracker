@@ -9,11 +9,11 @@ Usage:
 """
 
 import argparse
+import fcntl
 import logging
 import logging.handlers
 import os
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
