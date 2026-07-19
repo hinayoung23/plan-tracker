@@ -12,8 +12,8 @@ eliminating unnecessary polling when there are no notifications.
 
 Usage:
   python scripts/webhook_receiver.py [--host 127.0.0.1] [--port 9876]
-                                     [--channel qqbot]
-                                     [--to qqbot:c2c:<hex-id>]
+
+Channel and target are read from webhook_delivery.json (set by webhook-setup).
 """
 
 from __future__ import annotations
@@ -367,7 +367,7 @@ def main():
     to = cfg.get("to", "")
 
     if not to:
-        print("Error: --to is required (e.g. qqbot:c2c:<hex-id>). "
+        print("Error: no delivery target configured. "
               "Run 'python -m plan_tracker.cli webhook-setup' to configure.",
               file=sys.stderr)
         sys.exit(1)
