@@ -3,6 +3,7 @@
 Validates plan structure, manages plan index, delegates milestone operations.
 """
 
+import os
 from datetime import datetime, timezone
 
 from plan_tracker.storage import (
@@ -179,27 +180,34 @@ def update_plan(plan_name: str, updates: dict) -> dict:
 
 
 def delete_plan(plan_name: str) -> bool:
-    """Delete a plan and all associated data. Holds index lock to
-    prevent delete+recreate races."""
+    """Delete a plan and all associated data under both plan + index locks."""
     validate_plan_name(plan_name)
     import logging
     _log = logging.getLogger("plan_tracker.plan_manager")
     from plan_tracker.file_lock import LockedFile
 
-    # Acquire index lock FIRST so no concurrent create can sneak in
-    # between our delete and the index update.
-    with LockedFile(INDEX_FILE, default={"plans": []}) as index:
-        # Check existence under lock
-        if not plan_path(plan_name).exists():
-            return False
+    path = DATA_DIR / f"{plan_name}.json"
+    if not path.exists():
+        return False
 
-        # Remove from index before deleting the file
-        index["plans"] = [p for p in index["plans"] if p["name"] != plan_name]
+    # Hold the PLAN file lock so no concurrent update can be writing
+    # to the file while we unlink it.
+    try:
+        plan_fd = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return False
+    try:
+        import fcntl
+        fcntl.flock(plan_fd, fcntl.LOCK_EX)
 
-        # Delete plan file
-        delete_plan_file(plan_name)
+        # Now hold index lock for the index update
+        with LockedFile(INDEX_FILE, default={"plans": []}) as index:
+            index["plans"] = [p for p in index["plans"] if p["name"] != plan_name]
+            # Plan lock still held — unlink is safe
+            os.close(plan_fd)
+            delete_plan_file(plan_name)
 
-        # Clean up associated data
+        # Clean up associated data (outside locks)
         try:
             from plan_tracker.notification_queue import remove_for_plan
             remove_for_plan(plan_name)
@@ -215,6 +223,9 @@ def delete_plan(plan_name: str) -> bool:
             remove_plan_state(plan_name)
         except Exception:
             _log.exception("Failed to clean reminder state for %s", plan_name)
+    except Exception:
+        os.close(plan_fd)
+        raise
 
     return True
 

@@ -232,9 +232,12 @@ class SmartPoller:
     # ── internals ───────────────────────────────────────────────
 
     def _ensure_running(self) -> None:
-        """Always start a new poller thread.  Old threads detect the
-        generation bump and exit gracefully."""
+        """Start a poller thread if none is active."""
         with self._lock:
+            if self._thread and self._thread.is_alive():
+                # Thread already active — just set wakeup and return.
+                # The active thread will pick up the notification.
+                return
             self._generation += 1
             self._wakeup.clear()
             self._thread = threading.Thread(

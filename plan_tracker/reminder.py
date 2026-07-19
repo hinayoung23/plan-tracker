@@ -548,16 +548,16 @@ class ReminderEngine:
             plan_title = note.get("plan_title", plan_name)
             ntype = note.get("type", "info")
 
-            # Enqueue only for queue-based channels (mcp, webhook).
-            # Email is direct-send only and should not generate
-            # queue entries that other receivers might consume.
-            queue_channels = {"mcp", "webhook"}
-            if any(ch in channels for ch in queue_channels):
-                enqueue_notification(
-                    plan_name=plan_name, ntype=ntype,
-                    message=note["message"], plan_title=plan_title,
-                    milestone_title=mtitle, milestone_id=mid,
-                )
+            # Enqueue only for queue-based channels (mcp, webhook),
+            # tagging the entry with its actual channel for routing.
+            for ch in channels:
+                if ch in ("mcp", "webhook"):
+                    enqueue_notification(
+                        plan_name=plan_name, ntype=ntype,
+                        message=note["message"], plan_title=plan_title,
+                        milestone_title=mtitle, milestone_id=mid,
+                        channel=ch,
+                    )
 
             for ch in channels:
                 if ch == "email":

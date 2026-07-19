@@ -182,7 +182,7 @@ def modify_plan_and_index(plan_name: str, modifier_fn,
     os.fchmod(plan_fd, 0o600)
     try:
         fcntl.flock(plan_fd, fcntl.LOCK_EX)
-        plan_data = os.read(plan_fd, 10_485_760)  # 10 MB max
+        plan_data = _read_full(plan_fd)
         try:
             plan = json.loads(plan_data) if plan_data else {}
         except (json.JSONDecodeError, ValueError):
@@ -203,11 +203,12 @@ def modify_plan_and_index(plan_name: str, modifier_fn,
         os.fchmod(index_fd, 0o600)
         try:
             fcntl.flock(index_fd, fcntl.LOCK_EX)
-            idx_data = os.read(index_fd, 10_485_760)
+            idx_data = _read_full(index_fd)
             try:
                 index = json.loads(idx_data) if idx_data else {"plans": []}
             except (json.JSONDecodeError, ValueError):
-                index = {"plans": []}
+                # Attempt to rebuild from plan files
+                index = _rebuild_index()
             _do_update_index_entry(plan_name, plan, index)
 
             # Write PLAN first (if this fails, index is unchanged)
@@ -226,12 +227,71 @@ def modify_plan_and_index(plan_name: str, modifier_fn,
 
 
 def _write_and_fsync(fd: int, data: dict) -> None:
-    """Atomically write *data* to *fd* with fsync."""
+    """Write *data* to *fd* crash-safely.
+
+    Writes BEFORE truncating — if the write or fsync fails, the file
+    still contains the old valid data.  Loops on os.write to handle
+    partial writes.
+    """
     payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     os.lseek(fd, 0, os.SEEK_SET)
-    os.ftruncate(fd, 0)
-    os.write(fd, payload)
+    written = 0
+    while written < len(payload):
+        n = os.write(fd, payload[written:])
+        if n < 0:
+            raise OSError("write failed")
+        written += n
     os.fsync(fd)
+    # Only truncate after confirmed write+fsync
+    os.ftruncate(fd, len(payload))
+
+
+def _read_full(fd: int, max_bytes: int = 100_000_000) -> bytes:
+    """Read *fd* from position 0 until EOF or *max_bytes*."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    chunks = []
+    total = 0
+    while total < max_bytes:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
+def _rebuild_index() -> dict:
+    """Rebuild the plan index from plan files on disk."""
+    result: dict = {"plans": []}
+    try:
+        for path in sorted(DATA_DIR.glob("*.json")):
+            if path.name == "plan-index.json":
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    plan = json.load(f)
+                name = plan.get("name", path.stem)
+                if not name:
+                    continue
+                milestones = plan.get("milestones", [])
+                completed = sum(1 for m in milestones if m["status"] == "completed")
+                total = len(milestones)
+                result["plans"].append({
+                    "name": name,
+                    "title": plan.get("title", name),
+                    "category": plan.get("category", "custom"),
+                    "target_end_date": plan.get("target_end_date", ""),
+                    "total_milestones": total,
+                    "completed_milestones": completed,
+                    "overall_progress_pct": round(completed / total * 100) if total else 0,
+                    "status": _compute_plan_status(plan),
+                    "updated_at": plan.get("updated_at", ""),
+                })
+            except (json.JSONDecodeError, OSError, KeyError):
+                continue
+    except OSError:
+        pass
+    return result
 
 
 def _do_update_index_entry(plan_name: str, plan: dict, index: dict) -> None:

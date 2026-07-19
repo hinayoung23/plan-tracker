@@ -20,7 +20,7 @@ MAX_QUEUE_SIZE = 500
 
 def enqueue(plan_name: str, ntype: str, message: str,
             plan_title: str = "", milestone_title: str = "",
-            milestone_id: str = "") -> str:
+            milestone_id: str = "", channel: str = "mcp") -> str:
     """Add a notification to the queue. Returns the notification ID."""
     with LockedFile(QUEUE_FILE, default={"queue": []}) as q:
         note_id = uuid.uuid4().hex[:12]
@@ -31,7 +31,7 @@ def enqueue(plan_name: str, ntype: str, message: str,
             "message": message, "plan_title": plan_title,
             "milestone_title": milestone_title,
             "milestone_id": milestone_id,
-            "channel": "mcp",  # source channel for delivery routing
+            "channel": channel,  # source channel for delivery routing
             "delivered": False, "delivered_at": None,
         }
         q["queue"].append(entry)
