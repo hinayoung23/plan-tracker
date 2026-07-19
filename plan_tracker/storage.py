@@ -249,9 +249,13 @@ def _atomic_write(path: Path, data: dict) -> None:
     concurrent writers from reading a stale inode after rename.
     """
     tmp_path = path.with_suffix(f".tmp-{os.getpid()}")
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
     payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     try:
-        tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             written = 0
             while written < len(payload):

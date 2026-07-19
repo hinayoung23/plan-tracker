@@ -54,9 +54,13 @@ def LockedFile(path: Path, default: dict | list | None = None):
 
             # Write via atomic tmp+rename (clean up tmp on failure)
             tmp_path = path.with_suffix(f".tmp-{os.getpid()}")
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
             payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
             try:
-                tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 try:
                     written = 0
                     while written < len(payload):
@@ -83,8 +87,11 @@ def safe_write_json(path: Path, data: dict | list) -> None:
     """Atomic write with proper permissions (0600 from creation)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".tmp-{os.getpid()}-{id(path)}")
-    # Create with 0600 directly — never world-readable even momentarily
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
         written = 0

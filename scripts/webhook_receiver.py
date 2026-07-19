@@ -356,22 +356,15 @@ def main():
     parser = argparse.ArgumentParser(description="Plan Tracker webhook receiver")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (must be localhost)")
     parser.add_argument("--port", type=int, default=9876, help="Listen port")
-    parser.add_argument("--channel", default="",
-                        help="OpenClaw delivery channel (auto-detected if not set)")
-    parser.add_argument("--to", default="",
-                        help="Delivery target (auto-detected if not set)")
     args = parser.parse_args()
 
-    # Reject non-localhost binding for security
     if args.host not in ("127.0.0.1", "localhost", "::1"):
-        print("Error: --host must be a localhost address (127.0.0.1, localhost, ::1)", file=sys.stderr)
+        print("Error: --host must be a localhost address", file=sys.stderr)
         sys.exit(1)
 
-    # Load delivery config from file (set by webhook-setup)
     cfg = _load_delivery_config()
-
-    channel = args.channel or cfg.get("channel", "qqbot")
-    to = args.to or cfg.get("to", "")
+    channel = cfg.get("channel", "qqbot")
+    to = cfg.get("to", "")
 
     if not to:
         print("Error: --to is required (e.g. qqbot:c2c:<hex-id>). "

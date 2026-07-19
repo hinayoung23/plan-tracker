@@ -50,17 +50,21 @@ logger = logging.getLogger("plan_tracker.daemon")
 
 
 def write_pid() -> int:
-    """Write PID and hold an exclusive lock on the PID file.
-
-    The lock is held for the lifetime of the daemon.  is_running()
-    detects it via non-blocking lock acquisition.  Returns the open
-    file descriptor (caller must close on shutdown).
-    """
+    """Write PID and hold an exclusive lock on the PID file."""
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(PID_FILE, os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     payload = f"{os.getpid()}:{int(time.time())}"
-    os.write(fd, payload.encode())
+    data = payload.encode()
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    written = 0
+    while written < len(data):
+        n = os.write(fd, data[written:])
+        if n <= 0:
+            raise OSError(f"write returned {n}")
+        written += n
+    os.fsync(fd)
     return fd
 
 
