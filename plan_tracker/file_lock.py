@@ -75,13 +75,10 @@ def LockedFile(path: Path, default: dict | list | None = None):
 
 
 def safe_write_json(path: Path, data: dict | list) -> None:
-    """Atomic write of *data* to *path* with proper permissions.
-
-    Writes to a temp file, fsyncs, renames, and chmods to 0600 so
-    that sensitive data (API keys, etc.) is never world-readable.
-    """
+    """Atomic write of *data* to *path* with proper permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    # Process-unique tmp filename prevents concurrent collisions
+    tmp = path.with_suffix(f".tmp-{os.getpid()}-{id(path)}")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.flush()

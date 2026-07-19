@@ -3,6 +3,8 @@
 Validates plan structure, manages plan index, delegates milestone operations.
 """
 
+import json
+import os
 from datetime import datetime, timezone
 
 from plan_tracker.storage import (
@@ -90,13 +92,30 @@ def create_plan(
         },
     }
 
-    # Create the plan file (empty skeleton), then atomically populate
-    # it + index.  This prevents concurrent creates of the same name.
+    # Check existence BEFORE touching any files to prevent overwrites.
     from plan_tracker import storage
+    if (storage.DATA_DIR / f"{name}.json").exists():
+        raise ValueError(f"Plan '{name}' already exists")
+
+    # Create empty file under lock, then atomically populate + index.
     from plan_tracker.file_lock import safe_write_json
+    from plan_tracker.file_lock import LockedFile
     path = storage.DATA_DIR / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    safe_write_json(path, {})
+
+    # Use process-unique tmp file to prevent concurrent collision
+    tmp_path = path.with_suffix(f".tmp-{os.getpid()}-{id(path)}")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump({}, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp_path, 0o600)
+    try:
+        tmp_path.replace(path)
+    except OSError:
+        # Race: another process created it first
+        tmp_path.unlink(missing_ok=True)
+        raise ValueError(f"Plan '{name}' already exists")
 
     def _populate(plan):
         if plan.get("name"):
