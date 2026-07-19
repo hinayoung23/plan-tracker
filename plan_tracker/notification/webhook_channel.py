@@ -67,13 +67,12 @@ class WebhookChannel(NotificationChannel):
 
             with urllib.request.urlopen(req, timeout=5) as resp:
                 if 200 <= resp.status < 300:
-                    logger.info("Webhook sent to %s: type=%s plan=%s",
-                                url, payload["type"], plan_name)
+                    logger.info("Webhook sent: type=%s plan=%s", payload["type"], plan_name)
                     return True
-                logger.warning("Webhook %s returned status %d", url, resp.status)
+                logger.warning("Webhook returned status %d", resp.status)
                 return False
         except Exception:
-            logger.exception("Webhook delivery to %s failed", url)
+            logger.exception("Webhook delivery failed")
             return False
 
     def is_available(self) -> bool:

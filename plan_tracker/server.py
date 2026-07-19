@@ -442,6 +442,13 @@ async def notification_fetch() -> str:
 async def notification_ack(notification_ids: list[str]) -> str:
     """Mark notifications as delivered after they have been sent to the user."""
     count = mark_delivered(notification_ids)
+    if count < len(notification_ids):
+        return _json_response({
+            "success": False,
+            "error": f"Only {count}/{len(notification_ids)} acknowledged",
+            "acknowledged": count,
+            "requested": len(notification_ids),
+        })
     return _json_response({
         "success": True,
         "acknowledged": count,

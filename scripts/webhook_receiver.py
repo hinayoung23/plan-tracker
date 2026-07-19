@@ -37,6 +37,12 @@ _DATA_DIR = Path(os.environ.get("PLAN_TRACKER_DATA_DIR", _PKG_DIR / "data"))
 _DELIVERY_CONFIG = _DATA_DIR / "webhook_delivery.json"
 _WEBHOOK_LOG = _DATA_DIR / "webhook-stderr.log"
 
+# Ensure restrictive permissions on first creation
+if not _WEBHOOK_LOG.exists():
+    _WEBHOOK_LOG.parent.mkdir(parents=True, exist_ok=True)
+    _WEBHOOK_LOG.touch()
+    os.chmod(_WEBHOOK_LOG, 0o600)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [webhook-receiver] %(levelname)s: %(message)s",
@@ -146,11 +152,16 @@ def _deliver_pending(channel: str, to: str) -> bool:
         return False
 
     delivered = False
+    # Idempotency key: hash of sorted batch IDs so retrying the same
+    # batch doesn't produce duplicate deliveries, but a different batch
+    # (e.g., C added after A,B) gets a fresh key.
+    import hashlib
+    batch_key = hashlib.sha256(",".join(sorted(ids)).encode()).hexdigest()[:16]
     payload = json.dumps({
         "channel": channel,
         "target": to,
         "message": text,
-        "idempotencyKey": ids[0] if ids else "",
+        "idempotencyKey": batch_key,
     })
     try:
         msg_result = subprocess.run(
@@ -372,7 +383,7 @@ def main():
 
     server = HTTPServer((args.host, args.port), WebhookHandler)
     logger.info("Webhook receiver listening on http://%s:%d", args.host, args.port)
-    logger.info("Delivery: %s → %s", channel, to)
+    logger.info("Delivery channel: %s", channel)
 
     try:
         server.serve_forever()
