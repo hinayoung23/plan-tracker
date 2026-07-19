@@ -37,3 +37,6 @@ data/daemon-stdout.log
 data/*.log
 data/*.log.*
 data/daemon.lock
+
+# Runtime markers
+data/.reschedule_needed

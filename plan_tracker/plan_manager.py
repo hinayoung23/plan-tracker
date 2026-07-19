@@ -92,34 +92,20 @@ def create_plan(
         },
     }
 
-    # Check existence BEFORE touching any files to prevent overwrites.
+    # Atomic create: O_CREAT|O_EXCL either creates the file or fails
+    # with FileExistsError.  No window for concurrent overwrites.
     from plan_tracker import storage
-    if (storage.DATA_DIR / f"{name}.json").exists():
-        raise ValueError(f"Plan '{name}' already exists")
-
-    # Create empty file under lock, then atomically populate + index.
-    from plan_tracker.file_lock import safe_write_json
-    from plan_tracker.file_lock import LockedFile
     path = storage.DATA_DIR / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Use process-unique tmp file to prevent concurrent collision
-    tmp_path = path.with_suffix(f".tmp-{os.getpid()}-{id(path)}")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump({}, f)
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp_path, 0o600)
     try:
-        tmp_path.replace(path)
-    except OSError:
-        # Race: another process created it first
-        tmp_path.unlink(missing_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
         raise ValueError(f"Plan '{name}' already exists")
 
+    # Populate under lock (plan+index are written atomically within
+    # modify_plan_and_index — no separate empty-file pre-creation).
     def _populate(plan):
-        if plan.get("name"):
-            raise ValueError(f"Plan '{name}' already exists")
         plan.update(plan_data)
 
     plan = modify_plan_and_index(name, _populate)

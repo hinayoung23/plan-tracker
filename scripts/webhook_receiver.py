@@ -276,17 +276,15 @@ class SmartPoller:
             # Go dormant when we've reached max backoff AND had at
             # least one empty poll at that level.
             if backoff_idx >= len(_BACKOFF_SEQUENCE) - 1 and empty_streak >= 1:
-                if self._wakeup.is_set():
-                    backoff_idx = 0
-                    empty_streak = 0
-                    self._wakeup.clear()
-                    continue
+                # Set _running=False FIRST so _ensure_running can
+                # start a new thread if a wakeup arrives.  Then check
+                # _wakeup — if set, a new thread is already starting
+                # and we can safely exit.
                 with self._lock:
                     self._running = False
-                # If a wakeup arrived between the check above and
-                # _running=False, _ensure_running will start a new
-                # thread (it checks _running, not thread aliveness).
-                # We do NOT resume the old thread to prevent dual-thread races.
+                if self._wakeup.is_set():
+                    # _ensure_running will start a new thread.
+                    self._wakeup.clear()
                 logger.info(
                     "Smart poller: queue empty through full backoff cycle "
                     "(max %ds) — going dormant", _BACKOFF_SEQUENCE[-1]

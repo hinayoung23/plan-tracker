@@ -712,10 +712,10 @@ def _build_daily_checkin(entry: dict, plan: dict, milestone: dict | None,
         f"当前: {ms_title} ({ms_pct}%)",
     ]
     if archived:
-        parts.append(
-            f"昨日补确认({archived.get('from_date','')}): "
-            f"{archived.get('completion_status','')}"
-        )
+        line = f"昨日补确认({archived.get('from_date','')}): {archived.get('completion_status','')}"
+        if archived.get("notes"):
+            line += f" — {archived['notes']}"
+        parts.append(line)
 
     msg = "\n".join(parts)
 

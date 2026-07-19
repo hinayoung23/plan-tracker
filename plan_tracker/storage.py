@@ -160,7 +160,8 @@ def modify_plan(plan_name: str, modifier_fn) -> dict | None:
 
 
 def modify_plan_and_index(plan_name: str, modifier_fn) -> dict:
-    """Atomically read-modify-write a plan AND update its index entry."""
+    """Write plan first, then index.  If index write fails the plan
+    body is correct and the index can be rebuilt from it."""
     validate_plan_name(plan_name)
     _ensure_data_dir()
     plan_path = DATA_DIR / f"{plan_name}.json"
@@ -171,11 +172,11 @@ def modify_plan_and_index(plan_name: str, modifier_fn) -> dict:
                 raise ValueError(f"Plan '{plan_name}' not found")
             plan["updated_at"] = datetime.now(timezone.utc).isoformat()
             modifier_fn(plan)
-
-            with LockedFile(INDEX_FILE, default={"plans": []}) as index:
-                _do_update_index_entry(plan_name, plan, index)
-
-            return dict(plan)
+            result = dict(plan)
+        # Plan is now saved.  Update index separately.
+        with LockedFile(INDEX_FILE, default={"plans": []}) as index:
+            _do_update_index_entry(plan_name, result, index)
+        return result
     except FileNotFoundError:
         raise ValueError(f"Plan '{plan_name}' not found")
 
