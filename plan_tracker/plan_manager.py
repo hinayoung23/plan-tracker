@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from plan_tracker.storage import (
     DATA_DIR,
+    INDEX_FILE,
     load_plan,
     save_plan,
     modify_plan_and_index,
