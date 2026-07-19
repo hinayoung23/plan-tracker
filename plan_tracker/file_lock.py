@@ -102,4 +102,11 @@ def safe_write_json(path: Path, data: dict | list) -> None:
             pass
         raise
     os.close(fd)
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

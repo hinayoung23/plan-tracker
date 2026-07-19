@@ -587,10 +587,15 @@ def cmd_webhook_setup(port: int = 9876, to: str = "",
     if not dry_run:
         from plan_tracker.storage import DATA_DIR
         config_file = DATA_DIR / "webhook_delivery.json"
-        # Atomic write with restrictive permissions
+        # Atomic write — os.open(0o600) never exposes data at 0644
         tmp = config_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(delivery_config, ensure_ascii=False, indent=2))
-        os.chmod(tmp, 0o600)
+        payload = json.dumps(delivery_config, ensure_ascii=False, indent=2)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, payload.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         tmp.replace(config_file)
 
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -721,9 +726,13 @@ def cmd_cron_setup(
 
     try:
         tmp_path = _DEFAULT_CRON_FILE.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as fh:
-            json.dump(cron_data, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
+        payload = json.dumps(cron_data, ensure_ascii=False, indent=2) + "\n"
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, payload.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         tmp_path.replace(_DEFAULT_CRON_FILE)
     except OSError as exc:
         print(f"Error: failed to write {_DEFAULT_CRON_FILE}: {exc}", file=sys.stderr)
@@ -778,10 +787,15 @@ def _add_mcp_server_to_config(config_path: Path, dry_run: bool = False) -> bool:
                          ensure_ascii=False, indent=2))
         return True
     tmp_path = config_path.with_suffix(".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
+    payload = json.dumps(cfg, ensure_ascii=False, indent=2) + "\n"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     tmp_path.replace(config_path)
+    os.chmod(config_path, 0o600)
     print(f"✓ Added plan-tracker MCP server to {config_path}")
     return True
 

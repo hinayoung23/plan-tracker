@@ -213,29 +213,18 @@ def test_idempotency_key_batch_hash():
 # ── Test 7: Tri-state backoff logic ──────────────────────────────
 
 def test_tri_state_backoff():
-    """DELIVERY_EMPTY must advance backoff; DELIVERY_FAIL must NOT."""
-    # Simulate the _poll_loop backoff logic
-    _BACKOFF_SEQUENCE = [30, 60, 120, 240, 480, 600]
+    """Verify the real _poll_loop source has correct tri-state logic."""
+    receiver_src = (Path(__file__).resolve().parent /
+                    "scripts" / "webhook_receiver.py").read_text()
 
-    # Case: EMPTY → backoff increases, eventually dormant
-    backoff_idx = 0
-    for _ in range(6):
-        # EMPTY path
-        if backoff_idx < len(_BACKOFF_SEQUENCE) - 1:
-            backoff_idx += 1
-    assert backoff_idx == 5, f"EMPTY: backoff should reach 5, got {backoff_idx}"
-
-    # Case: FAIL → backoff stays low
-    backoff_idx = 0
-    for _ in range(3):
-        # FAIL path
-        backoff_idx = max(0, backoff_idx - 1)
-    assert backoff_idx <= 0, f"FAIL: backoff should stay at 0, got {backoff_idx}"
-
-    # Case: OK resets everything
-    backoff_idx = 3
-    backoff_idx = 0  # OK path
-    assert backoff_idx == 0, "OK: should reset backoff"
+    # Find the backoff logic section (near DELIVERY_OK/DELIVERY_EMPTY/DELIVERY_FAIL)
+    # OK must set backoff_idx=0
+    assert "backoff_idx = 0" in receiver_src, "OK must reset backoff_idx"
+    # EMPTY must advance backoff (toward dormant)
+    assert "backoff_idx += 1" in receiver_src or "backoff_idx < len" in receiver_src, \
+        "EMPTY must advance backoff"
+    # FAIL must NOT advance backoff (must keep retrying)
+    assert "max(0, backoff_idx" in receiver_src, "FAIL must keep backoff low"
 
 
 # ── main ─────────────────────────────────────────────────────────
