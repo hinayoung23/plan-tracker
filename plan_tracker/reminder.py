@@ -548,15 +548,14 @@ class ReminderEngine:
             plan_title = note.get("plan_title", plan_name)
             ntype = note.get("type", "info")
 
-            # Only enqueue to the global chat queue if "mcp" is explicitly
-            # configured.  Email-only and webhook-only plans should not
-            # generate queue entries that could be picked up by other channels.
-            if "mcp" in channels:
-                enqueue_notification(
-                    plan_name=plan_name, ntype=ntype,
-                    message=note["message"], plan_title=plan_title,
-                    milestone_title=mtitle, milestone_id=mid,
-                )
+            # Always enqueue once. The queue is the universal delivery
+            # data store. Webhook/email channels serve as real-time
+            # wakeup signals, not as independent delivery paths.
+            enqueue_notification(
+                plan_name=plan_name, ntype=ntype,
+                message=note["message"], plan_title=plan_title,
+                milestone_title=mtitle, milestone_id=mid,
+            )
 
             for ch in channels:
                 if ch == "email":
@@ -708,11 +707,17 @@ def _build_daily_checkin(entry: dict, plan: dict, milestone: dict | None,
     ms_title = milestone["title"] if milestone else ""
     ms_pct = milestone.get("completion_pct", 0) if milestone else 0
 
-    msg = (
-        f"[Plan Tracker] ☀ {plan_title} — {today}\n"
-        f"当前: {ms_title} ({ms_pct}%)\n"
-        f"开始今天的打卡吧！"
-    )
+    parts = [
+        f"[Plan Tracker] ☀ {plan_title} — {today}",
+        f"当前: {ms_title} ({ms_pct}%)",
+    ]
+    if archived:
+        parts.append(
+            f"昨日补确认({archived.get('from_date','')}): "
+            f"{archived.get('completion_status','')}"
+        )
+
+    msg = "\n".join(parts)
 
     return {
         "plan_name": entry["name"],

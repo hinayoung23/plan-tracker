@@ -160,31 +160,24 @@ def modify_plan(plan_name: str, modifier_fn) -> dict | None:
 
 
 def modify_plan_and_index(plan_name: str, modifier_fn) -> dict:
-    """Atomically read-modify-write a plan AND update its index entry.
-
-    Index is updated FIRST (within the plan lock) so that if the
-    plan write fails the index is still consistent with the old plan.
-    Both the INDEX and PLAN locks are held simultaneously to prevent
-    concurrent readers from seeing body-index disagreement.
-    """
+    """Atomically read-modify-write a plan AND update its index entry."""
     validate_plan_name(plan_name)
     _ensure_data_dir()
     plan_path = DATA_DIR / f"{plan_name}.json"
 
-    # PLAN lock first (per-plan), then INDEX lock (global).  This
-    # avoids holding the global INDEX lock while waiting for a
-    # per-plan lock that another writer may hold.
-    with LockedFile(plan_path, default=None) as plan:
-        if plan is None:
-            raise ValueError(f"Plan '{plan_name}' not found")
-        plan["updated_at"] = datetime.now(timezone.utc).isoformat()
-        modifier_fn(plan)
+    try:
+        with LockedFile(plan_path, default=None) as plan:
+            if plan is None:
+                raise ValueError(f"Plan '{plan_name}' not found")
+            plan["updated_at"] = datetime.now(timezone.utc).isoformat()
+            modifier_fn(plan)
 
-        # Index update happens while plan lock is still held
-        with LockedFile(INDEX_FILE, default={"plans": []}) as index:
-            _do_update_index_entry(plan_name, plan, index)
+            with LockedFile(INDEX_FILE, default={"plans": []}) as index:
+                _do_update_index_entry(plan_name, plan, index)
 
-        return dict(plan)
+            return dict(plan)
+    except FileNotFoundError:
+        raise ValueError(f"Plan '{plan_name}' not found")
 
 
 def _do_update_index_entry(plan_name: str, plan: dict, index: dict) -> None:

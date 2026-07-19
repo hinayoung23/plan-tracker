@@ -140,8 +140,6 @@ def _deliver_pending(channel: str, to: str) -> bool:
 
     logger.info("Fetched %d notification(s), %d chars", len(ids), len(text))
 
-    logger.info("Fetched %d notification(s), %d chars", len(ids), len(text))
-
     # Step 2: deliver via openclaw message send.
     # The message text is already concise (notification builders in
     # reminder.py produce short summaries).  Process-argument visibility
@@ -278,9 +276,20 @@ class SmartPoller:
             # Go dormant when we've reached max backoff AND had at
             # least one empty poll at that level.
             if backoff_idx >= len(_BACKOFF_SEQUENCE) - 1 and empty_streak >= 1:
-                # Before going dormant, check if a wakeup arrived during
-                # our last delivery attempt.  If so, stay alive.
+                # Before going dormant, check for a race-condition wakeup.
                 if self._wakeup.is_set():
+                    backoff_idx = 0
+                    empty_streak = 0
+                    self._wakeup.clear()
+                    continue
+                with self._lock:
+                    self._running = False
+                # Double-check: wakeup may have arrived between the check
+                # above and setting _running=False under the lock.  If so,
+                # stay alive and let _ensure_running restart us.
+                if self._wakeup.is_set():
+                    with self._lock:
+                        self._running = True
                     backoff_idx = 0
                     empty_streak = 0
                     self._wakeup.clear()
@@ -289,8 +298,6 @@ class SmartPoller:
                     "Smart poller: queue empty through full backoff cycle "
                     "(max %ds) — going dormant", _BACKOFF_SEQUENCE[-1]
                 )
-                with self._lock:
-                    self._running = False
                 break
 
             # ── Wait (interruptible by wakeup) ──────────────────

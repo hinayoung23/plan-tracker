@@ -6,6 +6,7 @@ Validates plan structure, manages plan index, delegates milestone operations.
 from datetime import datetime, timezone
 
 from plan_tracker.storage import (
+    DATA_DIR,
     load_plan,
     save_plan,
     modify_plan_and_index,
@@ -50,12 +51,10 @@ def create_plan(
         raise ValueError(f"Category must be one of: {CATEGORIES}")
     if weekly_hours_target < 0:
         raise ValueError("weekly_hours_target must be >= 0")
-    if load_plan(name) is not None:
-        raise ValueError(f"Plan '{name}' already exists")
 
     now = datetime.now(timezone.utc).isoformat()
 
-    plan = {
+    plan_data = {
         "name": name,
         "title": title,
         "goal": goal,
@@ -91,8 +90,19 @@ def create_plan(
         },
     }
 
-    save_plan(name, plan)
-    update_index_entry(name, plan)
+    # Create the plan file (empty skeleton), then atomically populate
+    # it + index.  This prevents concurrent creates of the same name.
+    from plan_tracker.file_lock import safe_write_json
+    path = DATA_DIR / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    safe_write_json(path, {})
+
+    def _populate(plan):
+        if plan.get("name"):
+            raise ValueError(f"Plan '{name}' already exists")
+        plan.update(plan_data)
+
+    plan = modify_plan_and_index(name, _populate)
     _reschedule()
     return sanitize_plan(plan)
 

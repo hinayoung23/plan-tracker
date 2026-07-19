@@ -41,7 +41,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 #### Option 2: pip
 
 ```bash
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.10.2-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.10.3-py3-none-any.whl
 ```
 
 ### Setup
@@ -169,7 +169,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.10.2-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.10.3-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
