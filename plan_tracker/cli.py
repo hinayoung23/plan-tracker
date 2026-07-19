@@ -587,7 +587,11 @@ def cmd_webhook_setup(port: int = 9876, to: str = "",
     if not dry_run:
         from plan_tracker.storage import DATA_DIR
         config_file = DATA_DIR / "webhook_delivery.json"
-        config_file.write_text(json.dumps(delivery_config, ensure_ascii=False, indent=2))
+        # Atomic write with restrictive permissions
+        tmp = config_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(delivery_config, ensure_ascii=False, indent=2))
+        os.chmod(tmp, 0o600)
+        tmp.replace(config_file)
 
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -612,10 +616,6 @@ def cmd_webhook_setup(port: int = 9876, to: str = "",
         <string>{script_path}</string>
         <string>--port</string>
         <string>{port}</string>
-        <string>--channel</string>
-        <string>{channel}</string>
-        <string>--to</string>
-        <string>{to}</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

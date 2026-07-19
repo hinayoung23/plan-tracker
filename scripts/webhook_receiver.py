@@ -140,36 +140,33 @@ def _deliver_pending(channel: str, to: str) -> bool:
 
     logger.info("Fetched %d notification(s), %d chars", len(ids), len(text))
 
-    # Step 2: deliver via openclaw message send.
-    # The message text is already concise (notification builders in
-    # reminder.py produce short summaries).  Process-argument visibility
-    # is an inherent characteristic of the openclaw message send CLI.
+    # Step 2: deliver via plan-tracker-deliver (stdin, no argv leak).
     if _OPENCLAW_BIN is None:
         logger.error("openclaw binary not found — cannot deliver")
         return False
 
     delivered = False
+    payload = json.dumps({
+        "channel": channel,
+        "target": to,
+        "message": text,
+        "idempotencyKey": ids[0] if ids else "",
+    })
     try:
         msg_result = subprocess.run(
-            [
-                _OPENCLAW_BIN, "message", "send",
-                "--channel", channel,
-                "--target", to,
-                "--message", text,
-                "--json",
-            ],
-            capture_output=True, text=True, timeout=15,
+            [_OPENCLAW_BIN, "plan-tracker-deliver"],
+            input=payload, text=True, capture_output=True, timeout=15,
             env={**__import__("os").environ,
                  "PATH": f"{Path(_OPENCLAW_BIN).parent}:{__import__('os').environ.get('PATH', '')}"},
         )
         if msg_result.returncode == 0:
-            logger.info("Delivered to %s via %s", to, channel)
+            logger.info("Delivered %d notification(s) via %s", len(ids), channel)
             delivered = True
         else:
-            logger.error("openclaw message send failed (rc=%d): %s",
-                         msg_result.returncode, msg_result.stderr.strip())
+            # Don't log stderr — may contain message fragments
+            logger.error("delivery failed (rc=%d)", msg_result.returncode)
     except Exception:
-        logger.exception("openclaw message send failed")
+        logger.exception("delivery failed")
 
     # Step 3: ack only on success. If ack fails, treat delivery as
     # failed so the notification stays in queue for retry.
