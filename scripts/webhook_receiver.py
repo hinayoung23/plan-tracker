@@ -171,7 +171,8 @@ def _deliver_pending(channel: str, to: str) -> bool:
     except Exception:
         logger.exception("openclaw message send failed")
 
-    # Step 3: ack only on success; verify ack command succeeded
+    # Step 3: ack only on success. If ack fails, treat delivery as
+    # failed so the notification stays in queue for retry.
     if delivered and ids:
         try:
             ack_result = subprocess.run(
@@ -184,8 +185,10 @@ def _deliver_pending(channel: str, to: str) -> bool:
             else:
                 logger.error("ack failed (rc=%d): %s — notifs will be re-delivered",
                             ack_result.returncode, ack_result.stderr.strip())
+                delivered = False
         except Exception:
             logger.exception("ack command failed — notifications will be re-delivered")
+            delivered = False
 
     return delivered
 

@@ -164,7 +164,6 @@ def add_checkin(
         result_milestone[0] = milestone
 
     plan = modify_plan_and_index(plan_name, _do_checkin)
-    update_index_entry(plan_name, plan)
     milestone = result_milestone[0]
 
     from plan_tracker.daily_tracker import auto_confirm_from_checkin

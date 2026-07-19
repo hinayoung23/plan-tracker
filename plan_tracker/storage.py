@@ -160,13 +160,53 @@ def modify_plan(plan_name: str, modifier_fn) -> dict | None:
 
 
 def modify_plan_and_index(plan_name: str, modifier_fn) -> dict:
-    """Like modify_plan, then immediately updates the plan index.
+    """Atomically read-modify-write a plan AND update its index entry.
 
-    This minimizes the window where the plan body and index disagree.
+    Acquires the INDEX lock BEFORE releasing the PLAN lock, so no
+    concurrent write can observe a state where the plan body and
+    index disagree on milestone counts.
     """
-    plan = modify_plan(plan_name, modifier_fn)
-    update_index_entry(plan_name, plan)
-    return plan
+    validate_plan_name(plan_name)
+    _ensure_data_dir()
+    plan_path = DATA_DIR / f"{plan_name}.json"
+
+    # Acquire index lock FIRST, then plan lock. Both held simultaneously.
+    with LockedFile(INDEX_FILE, default={"plans": []}) as index:
+        try:
+            with LockedFile(plan_path, default=None) as plan:
+                if plan is None:
+                    raise ValueError(f"Plan '{plan_name}' not found")
+                plan["updated_at"] = datetime.now(timezone.utc).isoformat()
+                modifier_fn(plan)
+                _do_update_index_entry(plan_name, plan, index)
+                return dict(plan)
+        except FileNotFoundError:
+            raise ValueError(f"Plan '{plan_name}' not found")
+
+
+def _do_update_index_entry(plan_name: str, plan: dict, index: dict) -> None:
+    """Update index entry in-place (index lock held by caller)."""
+    milestones = plan.get("milestones", [])
+    completed = sum(1 for m in milestones if m["status"] == "completed")
+    total = len(milestones)
+    overall = round(completed / total * 100) if total else 0
+    now = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "name": plan_name,
+        "title": plan.get("title", plan_name),
+        "category": plan.get("category", "custom"),
+        "target_end_date": plan.get("target_end_date", ""),
+        "total_milestones": total,
+        "completed_milestones": completed,
+        "overall_progress_pct": overall,
+        "status": _compute_plan_status(plan),
+        "updated_at": now,
+    }
+    for i, p in enumerate(index["plans"]):
+        if p["name"] == plan_name:
+            index["plans"][i] = entry
+            return
+    index["plans"].append(entry)
 
 
 def delete_plan_file(plan_name: str) -> bool:
