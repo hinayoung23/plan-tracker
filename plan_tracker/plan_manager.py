@@ -99,6 +99,7 @@ def create_plan(
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, b"{}")
         os.close(fd)
     except FileExistsError:
         raise ValueError(f"Plan '{name}' already exists")
