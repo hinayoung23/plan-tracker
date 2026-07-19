@@ -177,33 +177,43 @@ def update_plan(plan_name: str, updates: dict) -> dict:
 
 
 def delete_plan(plan_name: str) -> bool:
-    """Delete a plan and all associated data."""
+    """Delete a plan and all associated data. Holds index lock to
+    prevent delete+recreate races."""
     validate_plan_name(plan_name)
-    plan = load_plan(plan_name)
-    if plan is None:
-        return False
-
-    # Clean up associated data. Log failures but don't block deletion.
     import logging
     _log = logging.getLogger("plan_tracker.plan_manager")
-    try:
-        from plan_tracker.notification_queue import remove_for_plan
-        remove_for_plan(plan_name)
-    except Exception:
-        _log.exception("Failed to clean notification queue for %s", plan_name)
-    try:
-        from plan_tracker.daily_tracker import remove_for_plan as remove_daily
-        remove_daily(plan_name)
-    except Exception:
-        _log.exception("Failed to clean daily state for %s", plan_name)
-    try:
-        from plan_tracker.reminder import remove_plan_state
-        remove_plan_state(plan_name)
-    except Exception:
-        _log.exception("Failed to clean reminder state for %s", plan_name)
+    from plan_tracker.file_lock import LockedFile
 
-    delete_plan_file(plan_name)
-    remove_index_entry(plan_name)
+    # Acquire index lock FIRST so no concurrent create can sneak in
+    # between our delete and the index update.
+    with LockedFile(INDEX_FILE, default={"plans": []}) as index:
+        # Check existence under lock
+        if not plan_path(plan_name).exists():
+            return False
+
+        # Remove from index before deleting the file
+        index["plans"] = [p for p in index["plans"] if p["name"] != plan_name]
+
+        # Delete plan file
+        delete_plan_file(plan_name)
+
+        # Clean up associated data
+        try:
+            from plan_tracker.notification_queue import remove_for_plan
+            remove_for_plan(plan_name)
+        except Exception:
+            _log.exception("Failed to clean notification queue for %s", plan_name)
+        try:
+            from plan_tracker.daily_tracker import remove_for_plan as remove_daily
+            remove_daily(plan_name)
+        except Exception:
+            _log.exception("Failed to clean daily state for %s", plan_name)
+        try:
+            from plan_tracker.reminder import remove_plan_state
+            remove_plan_state(plan_name)
+        except Exception:
+            _log.exception("Failed to clean reminder state for %s", plan_name)
+
     return True
 
 

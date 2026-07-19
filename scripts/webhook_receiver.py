@@ -218,8 +218,9 @@ class SmartPoller:
         self._to = to
         self._wakeup = threading.Event()
         self._lock = threading.Lock()
+        self._deliver_lock = threading.Lock()  # serializes delivery calls
         self._thread: threading.Thread | None = None
-        self._generation = 0  # bumped on each _ensure_running
+        self._generation = 0
 
     # ── public API ──────────────────────────────────────────────
 
@@ -260,8 +261,13 @@ class SmartPoller:
                     logger.debug("Smart poller gen=%d superseded", my_generation)
                     return
 
-            # ── Check queue ────────────────────────────────
-            delivered = _deliver_pending(self._channel, self._to)
+            # ── Check queue (serialized across threads) ────
+            with self._deliver_lock:
+                # Re-check generation under lock in case a newer
+                # thread took over while we were waiting.
+                if self._generation != my_generation:
+                    return
+                delivered = _deliver_pending(self._channel, self._to)
 
             if delivered:
                 backoff_idx = 0

@@ -381,7 +381,10 @@ def cmd_notification_fetch(args) -> None:
 
 def cmd_notification_ack(args) -> None:
     count = mark_delivered(args.ids)
-    _emit(_ok(acknowledged=count))
+    if count < len(args.ids):
+        _emit(json.dumps({"success": False, "error": f"Only {count}/{len(args.ids)} acknowledged"}, ensure_ascii=False), ok=False)
+    else:
+        _emit(_ok(acknowledged=count))
 
 
 # ── Daemon commands (existing) ────────────────────────────────────

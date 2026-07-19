@@ -31,6 +31,7 @@ def enqueue(plan_name: str, ntype: str, message: str,
             "message": message, "plan_title": plan_title,
             "milestone_title": milestone_title,
             "milestone_id": milestone_id,
+            "channel": "mcp",  # source channel for delivery routing
             "delivered": False, "delivered_at": None,
         }
         q["queue"].append(entry)
