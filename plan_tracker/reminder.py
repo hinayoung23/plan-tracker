@@ -465,7 +465,17 @@ class ReminderEngine:
             self._dispatch(notifications)
 
     def _cleanup_notification_queue(self) -> None:
-        """Remove delivered notifications and trim old daily state."""
+        """Periodic maintenance: rebuild index, trim queue, trim state."""
+        # Rebuild index from plan files to fix any crash-induced inconsistency
+        try:
+            from plan_tracker.storage import _rebuild_index
+            rebuilt = _rebuild_index()
+            from plan_tracker.file_lock import safe_write_json
+            safe_write_json(DATA_DIR / "plan-index.json", rebuilt)
+            logger.debug("Index rebuilt: %d plans", len(rebuilt.get("plans", [])))
+        except Exception:
+            logger.debug("Index rebuild skipped", exc_info=True)
+
         try:
             from plan_tracker.notification_queue import clear_all
             removed = clear_all()
@@ -474,7 +484,6 @@ class ReminderEngine:
         except Exception:
             logger.debug("Notification queue cleanup skipped", exc_info=True)
 
-        # Trim daily state entries older than 90 days
         try:
             from plan_tracker.daily_tracker import trim_old_entries
             trimmed = trim_old_entries(retention_days=90)
@@ -691,13 +700,6 @@ def _in_time_window(now: datetime, time_str: str, window_hours: int = 3) -> bool
         return False
 
 
-def _save_state_after_timeout(plan_name: str, ntype: str) -> None:
-    state = _load_state()
-    key = f"{plan_name}:daily_timeout"
-    state[key] = {"type": ntype, "time": _cooldown_now_iso()}
-    _save_state(state)
-
-
 # ── Notification builders ─────────────────────────────────────────
 
 def _build_daily_checkin(entry: dict, plan: dict, milestone: dict | None,
@@ -909,25 +911,6 @@ def _cooldown_key(plan_name: str, milestone_id: str, ntype: str) -> str:
     if milestone_id:
         return f"{plan_name}:{milestone_id}:{ntype}"
     return f"{plan_name}:{ntype}"
-
-
-def _load_state():
-    try:
-        if STATE_FILE.exists():
-            with open(STATE_FILE, "r") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        pass
-    return {}
-
-
-def _save_state(state):
-    try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f, indent=2)
-    except OSError:
-        pass
 
 
 def remove_plan_state(plan_name: str) -> None:

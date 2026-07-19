@@ -52,21 +52,28 @@ def LockedFile(path: Path, default: dict | list | None = None):
 
             yield data
 
-            # Write via atomic tmp+rename
+            # Write via atomic tmp+rename (clean up tmp on failure)
             tmp_path = path.with_suffix(f".tmp-{os.getpid()}")
             payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-            tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
-                written = 0
-                while written < len(payload):
-                    n = os.write(tmp_fd, payload[written:])
-                    if n <= 0:
-                        raise OSError("write returned 0")
-                    written += n
-                os.fsync(tmp_fd)
-            finally:
-                os.close(tmp_fd)
-            os.replace(tmp_path, path)
+                tmp_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    written = 0
+                    while written < len(payload):
+                        n = os.write(tmp_fd, payload[written:])
+                        if n <= 0:
+                            raise OSError("write returned 0")
+                        written += n
+                    os.fsync(tmp_fd)
+                finally:
+                    os.close(tmp_fd)
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)

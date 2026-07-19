@@ -36,13 +36,11 @@ _PYTHON = sys.executable
 _DATA_DIR = Path(os.environ.get("PLAN_TRACKER_DATA_DIR", _PKG_DIR / "data"))
 _DELIVERY_CONFIG = _DATA_DIR / "webhook_delivery.json"
 _WEBHOOK_LOG = _DATA_DIR / "webhook-stderr.log"
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+os.chmod(_DATA_DIR, 0o700)
 
-# Ensure restrictive permissions on first creation
-if not _WEBHOOK_LOG.exists():
-    _WEBHOOK_LOG.parent.mkdir(parents=True, exist_ok=True)
-    _WEBHOOK_LOG.touch()
-    os.chmod(_WEBHOOK_LOG, 0o600)
-
+# RotatingFileHandler — set permissions on every new log file via umask
+os.umask(0o077)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [webhook-receiver] %(levelname)s: %(message)s",
@@ -112,13 +110,19 @@ def _load_delivery_config() -> dict:
 # ── Delivery ────────────────────────────────────────────────────
 
 
-def _deliver_pending(channel: str, to: str) -> bool:
+# ── Delivery result constants ──────────────────────────────────
+DELIVERY_EMPTY = None       # nothing to deliver
+DELIVERY_OK = True          # delivered + acked successfully
+DELIVERY_FAIL = False       # fetch/send/ack failed, retry
+
+
+def _deliver_pending(channel: str, to: str):
     """Fetch undelivered notifications, relay to user, and ack on success.
 
     Returns:
-        True:  at least one notification was delivered AND acked.
-        False: delivery or ack failed (caller should retry); OR
-               nothing was pending (caller can back off).
+        DELIVERY_EMPTY (None): nothing pending.
+        DELIVERY_OK (True):   delivered and acked.
+        DELIVERY_FAIL (False): fetch/send/ack failed (retryable).
     """
     # Step 1: fetch without ack
     try:
@@ -129,11 +133,11 @@ def _deliver_pending(channel: str, to: str) -> bool:
         )
     except Exception:
         logger.exception("fetch command failed")
-        return False
+        return DELIVERY_FAIL
 
     text = result.stdout.strip()
     if not text:
-        return False  # nothing pending
+        return DELIVERY_EMPTY  # nothing pending
 
     # Parse notification IDs
     ids = []
@@ -142,7 +146,7 @@ def _deliver_pending(channel: str, to: str) -> bool:
             ids.append(line[5:-1])
 
     if not ids:
-        return False
+        return DELIVERY_EMPTY
 
     logger.info("Fetched %d notification(s), %d chars", len(ids), len(text))
 
@@ -269,16 +273,16 @@ class SmartPoller:
 
             # ── Check queue (serialized across threads) ────
             with self._deliver_lock:
-                # Re-check generation under lock in case a newer
-                # thread took over while we were waiting.
                 if self._generation != my_generation:
                     return
-                delivered = _deliver_pending(self._channel, self._to)
+                result = _deliver_pending(self._channel, self._to)
 
-            if delivered:
+            if result is DELIVERY_OK:
                 backoff_idx = 0
                 empty_streak = 0
-            else:
+            elif result is DELIVERY_EMPTY:
+                empty_streak += 1
+            else:  # DELIVERY_FAIL — treat as empty but log
                 empty_streak += 1
                 if backoff_idx < len(_BACKOFF_SEQUENCE) - 1:
                     backoff_idx += 1
@@ -372,11 +376,12 @@ def main():
     WebhookHandler.to = to
     WebhookHandler.poller = SmartPoller(channel, to)
 
-    # Also do an initial queue drain in case notifications piled up
-    # while the receiver was down (e.g. Gateway restart).
     logger.info("Running initial queue drain...")
-    if _deliver_pending(channel, to):
-        # Queue wasn't empty — start the poller for follow-up checks
+    drain_result = _deliver_pending(channel, to)
+    if drain_result is DELIVERY_OK:
+        WebhookHandler.poller.wakeup()
+    elif drain_result is DELIVERY_FAIL:
+        logger.warning("Initial delivery failed — will retry")
         WebhookHandler.poller.wakeup()
     else:
         logger.info("Initial queue drain: nothing pending")
