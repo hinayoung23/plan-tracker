@@ -92,8 +92,9 @@ def create_plan(
 
     # Create the plan file (empty skeleton), then atomically populate
     # it + index.  This prevents concurrent creates of the same name.
+    from plan_tracker import storage
     from plan_tracker.file_lock import safe_write_json
-    path = DATA_DIR / f"{name}.json"
+    path = storage.DATA_DIR / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     safe_write_json(path, {})
 
