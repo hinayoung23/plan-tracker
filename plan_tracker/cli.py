@@ -309,6 +309,17 @@ def cmd_daily_confirm(args) -> None:
 
 # ── Reminder commands ─────────────────────────────────────────────
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write all bytes to *fd*, handling short writes."""
+    written = 0
+    while written < len(data):
+        n = os.write(fd, data[written:])
+        if n <= 0:
+            raise OSError(f"write returned {n}")
+        written += n
+    os.fsync(fd)
+
+
 def _signal_reschedule() -> None:
     """Touch the reschedule marker so the daemon picks up config changes."""
     try:
@@ -587,13 +598,16 @@ def cmd_webhook_setup(port: int = 9876, to: str = "",
     if not dry_run:
         from plan_tracker.storage import DATA_DIR
         config_file = DATA_DIR / "webhook_delivery.json"
-        # Atomic write — os.open(0o600) never exposes data at 0644
+        # Atomic write — unlink stale tmp (may have wrong perms), create new
         tmp = config_file.with_suffix(".tmp")
-        payload = json.dumps(delivery_config, ensure_ascii=False, indent=2)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.write(fd, payload.encode("utf-8"))
-            os.fsync(fd)
+            os.unlink(tmp)
+        except OSError:
+            pass
+        payload = json.dumps(delivery_config, ensure_ascii=False, indent=2).encode("utf-8")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            _write_all(fd, payload)
         finally:
             os.close(fd)
         tmp.replace(config_file)
@@ -726,11 +740,14 @@ def cmd_cron_setup(
 
     try:
         tmp_path = _DEFAULT_CRON_FILE.with_suffix(".tmp")
-        payload = json.dumps(cron_data, ensure_ascii=False, indent=2) + "\n"
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.write(fd, payload.encode("utf-8"))
-            os.fsync(fd)
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        payload = json.dumps(cron_data, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            _write_all(fd, payload)
         finally:
             os.close(fd)
         tmp_path.replace(_DEFAULT_CRON_FILE)
@@ -787,11 +804,14 @@ def _add_mcp_server_to_config(config_path: Path, dry_run: bool = False) -> bool:
                          ensure_ascii=False, indent=2))
         return True
     tmp_path = config_path.with_suffix(".tmp")
-    payload = json.dumps(cfg, ensure_ascii=False, indent=2) + "\n"
-    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.write(fd, payload.encode("utf-8"))
-        os.fsync(fd)
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    payload = json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        _write_all(fd, payload)
     finally:
         os.close(fd)
     tmp_path.replace(config_path)

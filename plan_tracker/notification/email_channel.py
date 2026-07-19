@@ -305,18 +305,12 @@ class EmailChannel(NotificationChannel):
                 pass
 
             if status == 402:
-                if "minute" in body_text.lower() or "min" in body_text.lower():
-                    print(f"[plan-tracker] Email rate limit: minute cap exceeded for {recipient}")
-                elif "day" in body_text.lower() or "daily" in body_text.lower():
-                    print(f"[plan-tracker] Email rate limit: daily quota exceeded for {recipient}")
-                elif "month" in body_text.lower() or "monthly" in body_text.lower():
-                    print(f"[plan-tracker] Email rate limit: monthly quota exceeded for {recipient}")
-                else:
-                    print(f"[plan-tracker] Email rate limited (402) for {recipient}")
+                detail = "minute" if "minute" in body_text.lower() else "daily" if "day" in body_text.lower() else "monthly" if "month" in body_text.lower() else ""
+                print(f"[plan-tracker] Email rate limited (402): {detail}")
             elif status == 401:
-                print(f"[plan-tracker] Email auth failed (401): {body_text.strip()}")
+                print(f"[plan-tracker] Email auth failed (401)")
             else:
-                print(f"[plan-tracker] Email API error {status}: {body_text.strip()}")
+                print(f"[plan-tracker] Email API error {status}")
             return False
 
         except Exception:

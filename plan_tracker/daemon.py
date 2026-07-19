@@ -49,10 +49,19 @@ logging.basicConfig(
 logger = logging.getLogger("plan_tracker.daemon")
 
 
-def write_pid() -> None:
-    """Write the current PID and start time to the PID file."""
+def write_pid() -> int:
+    """Write PID and hold an exclusive lock on the PID file.
+
+    The lock is held for the lifetime of the daemon.  is_running()
+    detects it via non-blocking lock acquisition.  Returns the open
+    file descriptor (caller must close on shutdown).
+    """
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PID_FILE.write_text(f"{os.getpid()}:{int(time.time())}")
+    fd = os.open(PID_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    payload = f"{os.getpid()}:{int(time.time())}"
+    os.write(fd, payload.encode())
+    return fd
 
 
 def read_pid() -> int | None:
@@ -75,92 +84,28 @@ def remove_pid() -> None:
         pass
 
 
-def _verify_daemon_process(pid: int) -> bool:
-    """Check that the process at *pid* is actually a plan-tracker daemon.
-
-    Prevents false positives when a stale PID is reused by an unrelated
-    process (the root cause of dual-daemon zombies).
-    """
-    try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True, timeout=5,
-        )
-        return "plan_tracker.daemon" in result.stdout
-    except Exception:
-        return False
-
-
 def is_running() -> bool:
-    """Check if a daemon process is currently running.
+    """Check if a daemon process holds the PID file lock.
 
-    Verifies both that the PID exists AND that it belongs to a
-    plan-tracker daemon (not a PID-reuse collision).
+    The daemon holds fcntl.LOCK_EX on daemon.pid while running.
+    If we can acquire LOCK_EX|LOCK_NB, no daemon is running.
+    This works in sandboxes where ps/pgrep are unavailable.
     """
-    pid = read_pid()
-    if pid is None:
-        return False
     try:
-        os.kill(pid, 0)
-        return _verify_daemon_process(pid)
-    except ProcessLookupError:
-        remove_pid()
-        return False
-    except PermissionError:
-        # Process exists but we can't signal it — still verify via ps.
-        # Don't delete the PID file; we don't own the process but it
-        # might be our daemon running under a different user.
-        return _verify_daemon_process(pid)
-
-
-def _kill_any_daemon() -> int:
-    """Kill every plan-tracker daemon process on the system.
-
-    Scans for *all* daemon.py processes (not just the one in the
-    PID file) so that zombie daemons left by PID-file races are
-    cleaned up.  Returns the number of processes killed.
-    """
-    killed = 0
+        PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(PID_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return True  # Can't open — assume running to be safe
     try:
-        result = subprocess.run(
-            ["pgrep", "-f", "plan_tracker.daemon"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for line in result.stdout.strip().splitlines():
-            pid_str = line.strip()
-            if not pid_str:
-                continue
-            try:
-                pid = int(pid_str)
-                if pid == os.getpid():
-                    continue  # Don't kill ourselves
-                os.kill(pid, signal.SIGTERM)
-                killed += 1
-                logger.info("Killed old daemon (PID: %d)", pid)
-            except (ValueError, ProcessLookupError, PermissionError):
-                pass
-    except Exception:
-        pass
-
-    # Wait for killed processes to exit
-    if killed > 0:
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            try:
-                result = subprocess.run(
-                    ["pgrep", "-f", "plan_tracker.daemon"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                remaining = [p for p in result.stdout.strip().splitlines()
-                           if p.strip() and int(p.strip()) != os.getpid()]
-                if not remaining:
-                    break
-            except Exception:
-                break
-            time.sleep(0.5)
-
-    remove_pid()
-    return killed
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Lock acquired → no other daemon holds it
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    except (BlockingIOError, OSError):
+        # Lock held → daemon is running
+        return True
+    finally:
+        os.close(fd)
 
 
 def daemonize() -> None:
@@ -184,10 +129,11 @@ def daemonize() -> None:
 
 def run_foreground() -> None:
     """Run the daemon in the foreground (for debugging / launchd)."""
-    # Kill any existing daemon first — prevents dual-daemon zombies
-    _kill_any_daemon()
+    if is_running():
+        logger.error("Daemon is already running")
+        sys.exit(1)
 
-    write_pid()
+    pid_fd = write_pid()
     logger.info("Plan Tracker daemon started (PID: %d)", os.getpid())
 
     engine = ReminderEngine()
@@ -200,7 +146,7 @@ def run_foreground() -> None:
         _shutting_down = True
         logger.info("Received signal %d, shutting down...", signum)
         engine.stop()
-        remove_pid()
+        os.close(pid_fd)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
@@ -216,17 +162,18 @@ def run_foreground() -> None:
     finally:
         if not _shutting_down:
             engine.stop()
-            remove_pid()
+            os.close(pid_fd)
             logger.info("Plan Tracker daemon stopped")
 
 
 def run_daemon() -> None:
     """Fork to background and run."""
-    # Kill any existing daemon first — prevents dual-daemon zombies
-    _kill_any_daemon()
+    if is_running():
+        logger.error("Daemon is already running")
+        sys.exit(1)
 
     daemonize()
-    write_pid()
+    pid_fd = write_pid()
     logger.info("Plan Tracker daemon started in background (PID: %d)", os.getpid())
 
     engine = ReminderEngine()
@@ -238,7 +185,7 @@ def run_daemon() -> None:
             return
         _shutting_down = True
         engine.stop()
-        remove_pid()
+        os.close(pid_fd)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _shutdown)
@@ -253,7 +200,7 @@ def run_daemon() -> None:
     finally:
         if not _shutting_down:
             engine.stop()
-            remove_pid()
+            os.close(pid_fd)
 
 
 def main() -> None:

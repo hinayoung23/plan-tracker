@@ -42,3 +42,4 @@ data/daemon.lock
 data/.reschedule_needed
 data/*.lock
 data/*.tmp-*
+*.tmp
