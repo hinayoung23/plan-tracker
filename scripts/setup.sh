@@ -28,12 +28,28 @@ fi
 
 # ---- install Python package ----
 echo "[1/3] Installing Python package..."
+PACKAGE_VERSION="$(sed -n 's/^[[:space:]]*version = "\([^"]*\)"/\1/p' "$PLUGIN_DIR/pyproject.toml" | head -n 1)"
+WHEEL_PATH="$PLUGIN_DIR/dist/plan_tracker-$PACKAGE_VERSION-py3-none-any.whl"
+
 if [ "$PYTHON" != "python3" ]; then
-    "$PYTHON" -m pip install --quiet -e "$PLUGIN_DIR"
+    "$PYTHON" -c 'import mcp' 2>/dev/null || \
+        "$PYTHON" -m pip install --quiet 'mcp>=1.0.0'
+    if [ -f "$WHEEL_PATH" ]; then
+        "$PYTHON" -m pip install --quiet --force-reinstall --no-deps "$WHEEL_PATH"
+    else
+        "$PYTHON" -m pip install --quiet --force-reinstall --no-deps "$PLUGIN_DIR" || \
+        "$PYTHON" -m pip install --quiet --force-reinstall --no-deps --no-build-isolation "$PLUGIN_DIR"
+    fi
 else
     # Homebrew-managed system Python needs special handling
-    python3 -m pip install --quiet --break-system-packages -e "$PLUGIN_DIR" 2>/dev/null || \
-    python3 -m pip install --quiet --break-system-packages "$PLUGIN_DIR" 2>/dev/null || {
+    python3 -c 'import mcp' 2>/dev/null || \
+        python3 -m pip install --quiet --break-system-packages 'mcp>=1.0.0'
+    INSTALL_TARGET="$PLUGIN_DIR"
+    if [ -f "$WHEEL_PATH" ]; then
+        INSTALL_TARGET="$WHEEL_PATH"
+    fi
+    python3 -m pip install --quiet --break-system-packages --force-reinstall --no-deps "$INSTALL_TARGET" 2>/dev/null || \
+    python3 -m pip install --quiet --break-system-packages --force-reinstall --no-deps --no-build-isolation "$PLUGIN_DIR" 2>/dev/null || {
         echo "ERROR: pip install failed."
         echo "Try creating a venv manually: python3 -m venv $VENV_DIR"
         exit 1
@@ -47,10 +63,10 @@ echo "[2/3] Running setup (MCP registration + launchd + daemon)..."
 echo ""
 
 # ---- reminder about cron ----
-echo "[3/3] Next step — install the QQ notification cron job (optional):"
-echo "       $PYTHON -m plan_tracker.cli cron-setup --qq-id <your-qq-hex-id>"
+echo "[3/3] Next step — install the notification cron job (optional):"
+echo "       $PYTHON -m plan_tracker.cli cron-setup"
+echo "       If auto-detection is unavailable, pass --delivery-config <0600-json-path>."
 echo ""
 echo "=== Setup complete ==="
 echo "Restart OpenClaw to apply:"
-echo "  launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist"
-echo "  launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist"
+echo "  openclaw gateway restart"

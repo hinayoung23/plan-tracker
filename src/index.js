@@ -19,25 +19,48 @@ function validatePayload(data) {
     throw new Error("payload.target is required (string)");
   if (!data.message || typeof data.message !== "string")
     throw new Error("payload.message is required (string)");
-  if (data.message.length > 32768)
+  if (data.channel.length > 64 || data.target.length > 1024)
+    throw new Error("payload channel or target is too long");
+  if (/[\u0000-\u001f\u007f]/u.test(data.channel + data.target))
+    throw new Error("payload channel or target contains control characters");
+  if (Buffer.byteLength(data.message, "utf8") > 32768)
     throw new Error("payload.message too long (max 32 KiB)");
+  if (
+    data.idempotencyKey !== undefined &&
+    (typeof data.idempotencyKey !== "string" || data.idempotencyKey.length > 128)
+  )
+    throw new Error("payload.idempotencyKey must be a string up to 128 characters");
 }
 
 function readStdin() {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
+    let settled = false;
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => {
+      if (settled) return;
       total += Buffer.byteLength(chunk, "utf8");
       if (total > MAX_STDIN_BYTES) {
+        settled = true;
+        process.stdin.pause();
         reject(new Error("stdin payload exceeds 64 KiB limit"));
         return;
       }
       chunks.push(chunk);
     });
-    process.stdin.on("end", () => resolve(chunks.join("")));
-    process.stdin.on("error", reject);
+    process.stdin.on("end", () => {
+      if (!settled) {
+        settled = true;
+        resolve(chunks.join(""));
+      }
+    });
+    process.stdin.on("error", (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
   });
 }
 

@@ -70,6 +70,7 @@ def test_sanitize_plan():
     s = sanitize_plan(plan)
     assert s["reminders"]["email"]["api_secret"] == "***"
     assert s["reminders"]["email"]["api_key_id"] == "key1"
+    assert plan["reminders"]["email"]["api_secret"] == "sk-secret-123"
 
 
 def test_create_and_checkin():

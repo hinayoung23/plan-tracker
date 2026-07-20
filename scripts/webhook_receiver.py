@@ -3,7 +3,7 @@
 
 Receives POST requests from the plan-tracker daemon's WebhookChannel,
 runs ``plan-tracker.cli deliver`` to atomically fetch and ack pending
-notifications, then delivers them to the user via ``openclaw agent``.
+notifications, then delivers them through the privacy-safe OpenClaw plugin CLI.
 
 Smart polling: when a webhook POST wakes the receiver, a background
 poller checks the notification queue with exponential backoff.  If the
@@ -23,6 +23,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -36,22 +37,34 @@ _PYTHON = sys.executable
 _DATA_DIR = Path(os.environ.get("PLAN_TRACKER_DATA_DIR", _PKG_DIR / "data"))
 _DELIVERY_CONFIG = _DATA_DIR / "webhook_delivery.json"
 _WEBHOOK_LOG = _DATA_DIR / "webhook-stderr.log"
-_DATA_DIR.mkdir(parents=True, exist_ok=True)
-os.chmod(_DATA_DIR, 0o700)
-
-# RotatingFileHandler — set permissions on every new log file via umask
-os.umask(0o077)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [webhook-receiver] %(levelname)s: %(message)s",
-    handlers=[
-        logging.handlers.RotatingFileHandler(
-            _WEBHOOK_LOG, maxBytes=1_048_576, backupCount=3,
-            encoding="utf-8",
-        ),
-    ],
-)
 logger = logging.getLogger("webhook-receiver")
+_LOGGING_CONFIGURED = False
+
+
+def _configure_logging() -> None:
+    """Configure receiver logging only in the service process."""
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        return
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(_DATA_DIR, 0o700)
+    # RotatingFileHandler and rotated logs are private from first creation.
+    os.umask(0o077)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [webhook-receiver] %(levelname)s: %(message)s",
+        handlers=[
+            logging.handlers.RotatingFileHandler(
+                _WEBHOOK_LOG, maxBytes=1_048_576, backupCount=3,
+                encoding="utf-8",
+            ),
+        ],
+    )
+    try:
+        os.chmod(_WEBHOOK_LOG, 0o600)
+    except OSError:
+        pass
+    _LOGGING_CONFIGURED = True
 
 # Resolve the openclaw binary (not the shell function)
 def _resolve_openclaw_bin() -> str | None:
@@ -62,13 +75,17 @@ def _resolve_openclaw_bin() -> str | None:
     _nvm_current = Path.home() / ".nvm" / "versions" / "node"
     if _nvm_current.is_dir():
         try:
+            def _version_key(path: Path) -> tuple[int, ...]:
+                return tuple(int(part) for part in re.findall(r"\d+", path.name))
+
             _versions = sorted(
                 [d for d in _nvm_current.iterdir() if d.is_dir()],
-                reverse=True,  # newest first
+                key=_version_key,
+                reverse=True,
             )
             for _v in _versions:
                 _candidate = _v / "bin" / "openclaw"
-                if _candidate.exists():
+                if _candidate.is_file() and os.access(_candidate, os.X_OK):
                     return str(_candidate)
         except OSError:
             pass
@@ -78,7 +95,7 @@ def _resolve_openclaw_bin() -> str | None:
         "/opt/homebrew/bin/openclaw",
         "/usr/local/bin/openclaw",
     ):
-        if Path(_candidate).exists():
+        if Path(_candidate).is_file() and os.access(_candidate, os.X_OK):
             return _candidate
 
     # 3. Search PATH
@@ -98,14 +115,14 @@ _BACKOFF_SEQUENCE = [30, 60, 120, 240, 480, 600]
 
 
 def _load_delivery_config() -> dict:
-    """Load delivery config from disk, with CLI-arg overrides."""
-    if _DELIVERY_CONFIG.exists():
-        try:
-            with open(_DELIVERY_CONFIG, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
+    """Load the delivery target through the CLI's private-file validator."""
+    from plan_tracker.cli import _read_private_delivery_config
+    try:
+        channel, to = _read_private_delivery_config(_DELIVERY_CONFIG)
+        return {"channel": channel, "to": to}
+    except ValueError as exc:
+        logger.error("Invalid delivery configuration: %s", exc)
+        return {}
 
 # ── Delivery ────────────────────────────────────────────────────
 
@@ -127,7 +144,7 @@ def _deliver_pending(channel: str, to: str):
     # Step 1: fetch without ack
     try:
         result = subprocess.run(
-            [_PYTHON, "-m", "plan_tracker.cli", "deliver", "--no-ack"],
+            [_PYTHON, "-m", "plan_tracker.cli", "notification", "fetch"],
             capture_output=True, text=True, timeout=15,
             cwd=str(_PKG_DIR),
         )
@@ -138,18 +155,29 @@ def _deliver_pending(channel: str, to: str):
     if result.returncode != 0:
         logger.error("fetch command failed (rc=%d)", result.returncode)
         return DELIVERY_FAIL
-    text = result.stdout.strip()
-    if not text:
-        return DELIVERY_EMPTY  # nothing pending
-
-    # Parse notification IDs
-    ids = []
-    for line in text.split("\n"):
-        if line.startswith("(id: ") and line.endswith(")"):
-            ids.append(line[5:-1])
-
-    if not ids:
+    try:
+        response = json.loads(result.stdout)
+        pending = response.get("notifications", [])
+        if not response.get("success") or not isinstance(pending, list):
+            raise ValueError("invalid notification response")
+    except (json.JSONDecodeError, AttributeError, ValueError):
+        logger.error("fetch command returned invalid JSON")
+        return DELIVERY_FAIL
+    if not pending:
         return DELIVERY_EMPTY
+
+    lines, ids = [], []
+    for note in pending:
+        if not isinstance(note, dict) or not re.fullmatch(r"[0-9a-f]{12}", str(note.get("id", ""))):
+            logger.error("fetch command returned a malformed notification")
+            return DELIVERY_FAIL
+        note_id = str(note["id"])
+        ids.append(note_id)
+        lines.append(f"--- [{note.get('type', 'unknown')}] {note.get('plan_title', '')} ---")
+        lines.append(str(note.get("message", "")))
+        lines.append(f"(id: {note_id})")
+        lines.append("")
+    text = "\n".join(lines).rstrip()
 
     logger.info("Fetched %d notification(s), %d chars", len(ids), len(text))
 
@@ -247,9 +275,10 @@ class SmartPoller:
     # ── internals ───────────────────────────────────────────────
 
     def _ensure_running(self) -> None:
-        """Start a poller thread.  Old threads detect generation bump
-        and exit; the deliver_lock ensures only one delivers at a time."""
+        """Start one poller thread, or let the active thread handle the wake."""
         with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
             self._generation += 1
             self._wakeup.clear()
             self._thread = threading.Thread(
@@ -297,10 +326,20 @@ class SmartPoller:
 
             # ── Stop condition ─────────────────────────────
             if backoff_idx >= len(_BACKOFF_SEQUENCE) - 1 and empty_streak >= 1:
-                logger.info(
-                    "Smart poller gen=%d: queue empty through full backoff — "
-                    "going dormant", my_generation)
-                return
+                with self._lock:
+                    if self._generation != my_generation:
+                        return
+                    if self._wakeup.is_set():
+                        self._wakeup.clear()
+                        backoff_idx = 0
+                        empty_streak = 0
+                        continue
+                    else:
+                        self._thread = None
+                        logger.info(
+                            "Smart poller gen=%d: queue empty through full backoff — "
+                            "going dormant", my_generation)
+                        return
 
             # ── Wait ───────────────────────────────────────
             timeout = _BACKOFF_SEQUENCE[backoff_idx]
@@ -312,12 +351,21 @@ class SmartPoller:
 
 
 class WebhookHandler(BaseHTTPRequestHandler):
+    server_version = "plan-tracker-webhook/1"
+    sys_version = ""
     channel: str = "qqbot"
     to: str = ""
     poller: SmartPoller | None = None
 
     def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            self.send_error(400, "Invalid Content-Length")
+            return
+        if content_length < 0:
+            self.send_error(400, "Invalid Content-Length")
+            return
         # Limit body size to 64 KB
         if content_length > 65536:
             self.send_response(413)
@@ -328,15 +376,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
         try:
             data = json.loads(body) if body else {}
         except json.JSONDecodeError:
-            data = {}
+            self.send_error(400, "Invalid JSON")
+            return
+        if not isinstance(data, dict):
+            self.send_error(400, "JSON body must be an object")
+            return
 
-        ntype = data.get("type", "unknown")
-        plan = data.get("plan_title", data.get("plan_name", "unknown"))
-        logger.info("Webhook received: type=%s plan=%s", ntype, plan)
+        # Do not log plan names or payload content; the POST is only a wake-up
+        # signal and delivery reads the authoritative private queue.
+        logger.info("Webhook wake-up received (%d bytes)", len(body))
 
         # Respond immediately so the daemon doesn't time out
         self.send_response(202)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(json.dumps({"status": "accepted"}).encode())
 
@@ -353,6 +406,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    _configure_logging()
     parser = argparse.ArgumentParser(description="Plan Tracker webhook receiver")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (must be localhost)")
     parser.add_argument("--port", type=int, default=9876, help="Listen port")
@@ -360,6 +414,9 @@ def main():
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print("Error: --host must be a localhost address", file=sys.stderr)
+        sys.exit(1)
+    if not 1 <= args.port <= 65535:
+        print("Error: --port must be between 1 and 65535", file=sys.stderr)
         sys.exit(1)
 
     cfg = _load_delivery_config()

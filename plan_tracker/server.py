@@ -35,6 +35,7 @@ from plan_tracker.milestone_manager import (
     get_upcoming_milestones,
 )
 from plan_tracker.notification_queue import fetch_all, mark_delivered
+from plan_tracker.storage import DATA_DIR
 from plan_tracker.reminder import check_now as reminder_check_now_impl
 from plan_tracker.daily_tracker import (
     get_today_state,
@@ -120,8 +121,11 @@ async def plan_update(plan_name: str, updates: dict) -> str:
 @mcp.tool()
 async def plan_delete(plan_name: str) -> str:
     """Delete a plan."""
-    ok = delete_plan(plan_name)
-    return _json_response({"success": ok, "deleted": ok})
+    try:
+        ok = delete_plan(plan_name)
+        return _json_response({"success": True, "deleted": ok})
+    except (ValueError, RuntimeError) as exc:
+        return _json_response({"success": False, "error": str(exc)})
 
 
 @mcp.tool()
@@ -462,7 +466,7 @@ _DAEMON_WATCHDOG_INTERVAL = 300  # 5 minutes
 # Max wait time for daemon PID file to appear after launching
 _DAEMON_START_TIMEOUT = 10
 # Lock file to prevent concurrent daemon starts
-_DAEMON_LOCK_FILE = Path(__file__).resolve().parent.parent / "data" / "daemon.lock"
+_DAEMON_LOCK_FILE = DATA_DIR / "daemon.lock"
 
 
 def _ensure_daemon() -> bool:
@@ -481,11 +485,22 @@ def _ensure_daemon() -> bool:
 
     # Acquire an exclusive lock so only one caller tries to start
     _DAEMON_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(_DAEMON_LOCK_FILE.parent, 0o700)
     lock_fd = None
     try:
-        lock_fd = open(_DAEMON_LOCK_FILE, "w")
+        lock_fd = os.open(_DAEMON_LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
+        os.fchmod(lock_fd, 0o600)
+    except OSError:
+        logger.exception("Cannot open daemon startup lock")
+        if lock_fd is not None:
+            os.close(lock_fd)
+        return False
+
+    try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (BlockingIOError, OSError):
+    except BlockingIOError:
+        os.close(lock_fd)
+        lock_fd = None
         # Another caller is already starting the daemon — wait for it
         logger.debug("Another process is starting the daemon, waiting...")
         deadline = time.monotonic() + _DAEMON_START_TIMEOUT + 5
@@ -496,6 +511,10 @@ def _ensure_daemon() -> bool:
             time.sleep(0.5)
         logger.warning("Timed out waiting for another process to start daemon")
         return False
+    except OSError:
+        logger.exception("Cannot lock daemon startup lock")
+        os.close(lock_fd)
+        return False
 
     try:
         # Double-check after acquiring lock
@@ -505,7 +524,11 @@ def _ensure_daemon() -> bool:
 
         logger.info("Daemon not running — starting...")
         pkg_path = str(Path(__file__).resolve().parent.parent)
-        env = {**os.environ, "PYTHONPATH": pkg_path}
+        env = {
+            **os.environ,
+            "PYTHONPATH": pkg_path,
+            "PLAN_TRACKER_DATA_DIR": str(DATA_DIR),
+        }
         proc = subprocess.Popen(
             [sys.executable, "-m", "plan_tracker.daemon", "--daemon"],
             stdout=subprocess.DEVNULL,
@@ -534,7 +557,7 @@ def _ensure_daemon() -> bool:
         if lock_fd is not None:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                lock_fd.close()
+                os.close(lock_fd)
             except OSError:
                 pass
 

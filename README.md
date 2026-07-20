@@ -41,7 +41,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 #### Option 2: pip
 
 ```bash
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.12.6-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.0-py3-none-any.whl
 ```
 
 ### Setup
@@ -59,8 +59,7 @@ python -m plan_tracker.cli setup
 
 Restart OpenClaw afterwards:
 ```bash
-launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
-launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+openclaw gateway restart
 ```
 
 ### Notification Delivery
@@ -71,11 +70,16 @@ launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
 # Auto-detect channel and install
 python -m plan_tracker.cli webhook-setup
 
-# Or specify channel manually
-python -m plan_tracker.cli webhook-setup --channel qqbot --to qqbot:c2c:<id>
+# Or read it from a private file (must be chmod 600)
+python -m plan_tracker.cli webhook-setup --delivery-config /path/to/private-delivery.json
 ```
 
-The daemon POSTs notifications to a local webhook receiver, which delivers them instantly via `openclaw agent --deliver`. Notifications are also written to the queue as fallback.
+The private JSON file uses `{"channel":"qqbot","to":"qqbot:c2c:<id>"}`.
+Edit it with a local editor or secret manager; the target is never accepted as
+a command-line value. The daemon POSTs notifications to a local webhook
+receiver, which delivers them through the privacy-safe
+`openclaw plan-tracker-deliver` stdin command. Notifications are also written
+to the queue as fallback.
 
 **Option 2: Queue polling**
 
@@ -102,7 +106,7 @@ Atomically fetches and acks pending notifications.
 ```
 plan-tracker/
 ├── plan_tracker/
-│   ├── server.py              # FastMCP server (18 tools)
+│   ├── server.py              # FastMCP server (20 tools)
 │   ├── daemon.py              # Standalone daemon (double-fork)
 │   ├── reminder.py            # Scheduled reminder engine
 │   ├── plan_manager.py        # Plan CRUD + analysis
@@ -169,12 +173,12 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.12.6-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.0-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
 cd plan-tracker
-pip install -e .
+pip install .
 ```
 
 ### 初始化配置
@@ -197,8 +201,7 @@ python -m plan_tracker.cli setup --dry-run
 
 安装后重启 OpenClaw 生效：
 ```bash
-launchctl unload ~/Library/LaunchAgents/ai.openclaw.gateway.plist
-launchctl load ~/Library/LaunchAgents/ai.openclaw.gateway.plist
+openclaw gateway restart
 ```
 
 ### 可用工具
@@ -292,11 +295,11 @@ python -m plan_tracker.cli daemon stop
 # 一键安装 webhook receiver，自动发现投递渠道
 python -m plan_tracker.cli webhook-setup
 
-# 手动指定渠道
-python -m plan_tracker.cli webhook-setup --channel qqbot --to qqbot:c2c:<id>
+# 从私密文件读取（文件权限必须为 0600）
+python -m plan_tracker.cli webhook-setup --delivery-config /path/to/private-delivery.json
 ```
 
-Daemon 生成通知后通过 Webhook POST 到本地 receiver，receiver 调用 `openclaw agent --deliver` 实时推送到消息平台，延迟 < 3 秒。通知同时写入队列作为兜底。
+私密 JSON 格式为 `{"channel":"qqbot","to":"qqbot:c2c:<id>"}`。请通过本地编辑器或密钥管理器创建，接收目标不再接受命令行传值。Daemon 生成通知后通过 Webhook POST 到本地 receiver，receiver 通过 stdin 调用 `openclaw plan-tracker-deliver` 实时推送到消息平台。通知同时写入队列作为兜底。
 
 **方式二：队列轮询**
 

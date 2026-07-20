@@ -180,7 +180,11 @@ def update_plan(plan_name: str, updates: dict) -> dict:
 
 
 def delete_plan(plan_name: str) -> bool:
-    """Delete a plan and all associated data under plan + index locks."""
+    """Idempotently delete a plan and every associated state record.
+
+    Cleanup continues even when the authoritative plan body is already gone,
+    allowing a retry to finish a deletion interrupted by a crash.
+    """
     validate_plan_name(plan_name)
     import logging, fcntl
     _log = logging.getLogger("plan_tracker.plan_manager")
@@ -188,41 +192,65 @@ def delete_plan(plan_name: str) -> bool:
     from plan_tracker.file_lock import LockedFile
 
     path = DATA_DIR / f"{plan_name}.json"
-    if not path.exists():
-        return False
-
-    # Use lock file (consistent with modify_plan_and_index)
     lock_path = _lock_file_path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    existed = False
+    index_had_entry = False
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-
+        # The body is authoritative.  Delete it first; a stale derived index
+        # will be repaired by load_index() even if this process then crashes.
+        existed = delete_plan_file(plan_name)
         with LockedFile(INDEX_FILE, default={"plans": []}) as index:
-            index["plans"] = [p for p in index["plans"] if p["name"] != plan_name]
-
-        delete_plan_file(plan_name)
+            plans = index.get("plans", [])
+            if not isinstance(plans, list):
+                plans = []
+            index_had_entry = any(
+                isinstance(entry, dict) and entry.get("name") == plan_name
+                for entry in plans
+            )
+            index["plans"] = [
+                entry for entry in plans
+                if not isinstance(entry, dict) or entry.get("name") != plan_name
+            ]
+            # Force the next reader to validate/rebuild this derived cache.
+            index.pop("_source_signature", None)
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
 
-    # Clean up associated data
+    cleaned = 0
+    cleanup_errors = []
     try:
         from plan_tracker.notification_queue import remove_for_plan
-        remove_for_plan(plan_name)
+        cleaned += remove_for_plan(plan_name)
     except Exception:
+        cleanup_errors.append("notification queue")
         _log.exception("Failed to clean notification queue for %s", plan_name)
     try:
         from plan_tracker.daily_tracker import remove_for_plan as remove_daily
-        remove_daily(plan_name)
+        cleaned += remove_daily(plan_name)
     except Exception:
+        cleanup_errors.append("daily state")
         _log.exception("Failed to clean daily state for %s", plan_name)
     try:
         from plan_tracker.reminder import remove_plan_state
-        remove_plan_state(plan_name)
+        cleaned += remove_plan_state(plan_name)
     except Exception:
+        cleanup_errors.append("reminder state")
         _log.exception("Failed to clean reminder state for %s", plan_name)
 
-    return True
+    if existed or index_had_entry or cleaned or cleanup_errors:
+        _reschedule()
+    if cleanup_errors:
+        failed = ", ".join(cleanup_errors)
+        raise RuntimeError(
+            f"Plan body was deleted, but cleanup failed for {failed}; retry deletion"
+        )
+    if existed or index_had_entry or cleaned:
+        return True
+    return False
 
 
 def get_plan_analysis(plan_name: str) -> dict:

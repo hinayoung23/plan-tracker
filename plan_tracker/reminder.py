@@ -921,13 +921,11 @@ def _cooldown_key(plan_name: str, milestone_id: str, ntype: str) -> str:
     return f"{plan_name}:{ntype}"
 
 
-def remove_plan_state(plan_name: str) -> None:
+def remove_plan_state(plan_name: str) -> int:
     """Remove all cooldown state entries for a plan (called on plan delete)."""
-    try:
-        with _locked_state() as state:
-            prefix = f"{plan_name}:"
-            keys_to_remove = [k for k in state if k.startswith(prefix)]
-            for k in keys_to_remove:
-                del state[k]
-    except Exception:
-        pass
+    with _locked_state() as state:
+        prefix = f"{plan_name}:"
+        keys_to_remove = [k for k in state if k.startswith(prefix)]
+        for key in keys_to_remove:
+            del state[key]
+        return len(keys_to_remove)

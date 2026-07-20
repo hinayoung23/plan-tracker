@@ -1,11 +1,23 @@
 {
   "name": "plan-tracker",
-  "version": "2.12.9",
+  "version": "2.13.0",
   "description": "MCP server for long-term plan tracking — milestones, daily check-ins, webhook push notifications, event-scheduled reminders, and AI-assisted progress analysis. OpenClaw plugin.",
   "main": "src/index.js",
   "keywords": ["openclaw", "plugin", "mcp", "plan", "tracker", "reminder", "productivity"],
   "license": "MIT",
   "author": "hinayoung23",
+  "files": [
+    "src/*.js",
+    "plan_tracker/**/*.py",
+    "scripts/*.py",
+    "scripts/*.sh",
+    "skill/SKILL.md",
+    "data/.gitkeep",
+    "README.md",
+    "LICENSE",
+    "openclaw.plugin.json",
+    "pyproject.toml"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/hinayoung23/plan-tracker.git"
@@ -27,6 +39,6 @@
     }
   },
   "scripts": {
-    "postinstall": "echo '[plan-tracker] Installing Python package...' && python3 -m pip install --quiet -e . 2>/dev/null || python3 -m pip install --quiet . && echo '[plan-tracker] Running setup...' && python3 -m plan_tracker.cli setup"
+    "postinstall": "bash scripts/setup.sh"
   }
 }

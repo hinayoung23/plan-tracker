@@ -6,10 +6,6 @@ metadata:
     emoji: "📋"
     requires:
       bins: ["python3"]
-      mcp:
-        name: "plan-tracker"
-        command: "~/mcp-servers/plan-tracker/.venv/bin/python3"
-        args: ["-m", "plan_tracker.server"]
 ---
 
 # Plan Tracker
@@ -73,8 +69,8 @@ ReminderConfig
 ├── before_due_days: int (default 3)
 ├── weekly_checkin_day: monday|...|sunday|""
 ├── weekly_checkin_time: "HH:MM"
-├── notification_channels: ["mcp"] | ["mcp", "email"]
-└── email: { enabled, api_url, api_key, recipient }
+├── notification_channels: ["mcp", "webhook"] | ["mcp", "webhook", "email"]
+└── email: { enabled, api_url, api_key_id, api_secret, recipient }
 ```
 
 ---
@@ -339,7 +335,7 @@ daily_review_time: "21:30"          # Evening daily confirmation
 daily_checkin_enabled: true
 daily_review_enabled: true
 confirmation_timeout_minutes: 10    # Timeout for evening confirmation
-notification_channels: ["mcp"]
+notification_channels: ["mcp", "webhook"]
 ```
 
 Users can customize via `reminder_configure`:

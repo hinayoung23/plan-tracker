@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "plan-tracker"
-version = "2.12.9"
+version = "2.13.0"
 description = "MCP Server for long-term plan tracking with milestone management, daily reminders, and standalone daemon"
 readme = "README.md"
 license = { text = "MIT" }
@@ -38,6 +38,9 @@ Issues = "https://github.com/hinayoung23/plan-tracker/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["plan_tracker"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"scripts/webhook_receiver.py" = "plan_tracker/_webhook_receiver.py"
 
 [tool.hatch.build.targets.sdist]
 include = [

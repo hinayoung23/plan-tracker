@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from .base import NotificationChannel
 
 logger = logging.getLogger("plan_tracker.webhook_channel")
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 class WebhookChannel(NotificationChannel):
@@ -65,7 +66,9 @@ class WebhookChannel(NotificationChannel):
                 method="POST",
             )
 
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            # Webhooks are restricted to loopback by webhook_configure.  Never
+            # honor HTTP(S)_PROXY here: private plan content must stay local.
+            with _DIRECT_OPENER.open(req, timeout=5) as resp:
                 if 200 <= resp.status < 300:
                     logger.info("Webhook sent: type=%s plan=%s", payload["type"], plan_name)
                     return True

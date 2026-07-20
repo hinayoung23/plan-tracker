@@ -2,27 +2,14 @@
   "id": "plan-tracker",
   "name": "Plan Tracker",
   "description": "Long-term plan tracking with milestones, check-ins, progress analysis, webhook push notifications, and event-scheduled reminders. MCP server for AI assistants.",
-  "version": "2.12.9",
+  "version": "2.13.0",
   "activation": {
     "onStartup": false
   },
-  "contracts": {
-    "mcpServers": {
-      "plan-tracker": {
-        "command": "python3",
-        "args": ["-m", "plan_tracker.server"],
-        "env": {}
-      }
-    }
-  },
+  "skills": ["skill"],
   "configSchema": {
     "type": "object",
-    "additionalProperties": true,
-    "properties": {
-      "pythonPath": {
-        "type": "string",
-        "description": "Path to Python interpreter (default: auto-detect via setup command)"
-      }
-    }
+    "additionalProperties": false,
+    "properties": {}
   }
 }

@@ -35,6 +35,10 @@ echo ""
 # Verify data dir permissions
 DATA_PERMS=$(stat -f '%Lp' "$(python3 -c "from plan_tracker.storage import DATA_DIR; print(DATA_DIR)" 2>/dev/null)" 2>/dev/null || echo "unknown")
 echo "  data/ permissions: $DATA_PERMS"
+[ "$DATA_PERMS" = "700" ] || {
+    echo "ERROR: data directory permissions must be 700"
+    exit 1
+}
 
 echo ""
 echo "=== All checks passed ==="
