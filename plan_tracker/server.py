@@ -4,7 +4,8 @@ Provides tools for managing long-term plans with milestones,
 check-ins, progress analysis, and scheduled reminders.
 
 On startup, ensures the plan-tracker daemon is running and monitors
-its health, restarting it automatically if it dies.
+its health.  On macOS the daemon is owned by launchd so it does not
+inherit an MCP host's network sandbox.
 """
 
 import fcntl
@@ -467,6 +468,59 @@ _DAEMON_WATCHDOG_INTERVAL = 300  # 5 minutes
 _DAEMON_START_TIMEOUT = 10
 # Lock file to prevent concurrent daemon starts
 _DAEMON_LOCK_FILE = DATA_DIR / "daemon.lock"
+_DAEMON_LAUNCHD_LABEL = "com.plan-tracker.daemon"
+_DAEMON_LAUNCHD_PLIST = (
+    Path.home() / "Library" / "LaunchAgents" / f"{_DAEMON_LAUNCHD_LABEL}.plist"
+)
+
+
+def _supports_launchd() -> bool:
+    return sys.platform == "darwin"
+
+
+def _start_daemon_via_launchd() -> bool:
+    """Start the installed daemon service without inheriting the MCP sandbox."""
+    if not _DAEMON_LAUNCHD_PLIST.is_file():
+        logger.error(
+            "Daemon LaunchAgent is not installed; run `python -m plan_tracker.cli setup`"
+        )
+        return False
+
+    domain = f"gui/{os.getuid()}"
+    target = f"{domain}/{_DAEMON_LAUNCHD_LABEL}"
+    try:
+        probe = subprocess.run(
+            ["launchctl", "print", target],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        if probe.returncode == 0:
+            action = ["launchctl", "kickstart", target]
+        else:
+            action = ["launchctl", "bootstrap", domain, str(_DAEMON_LAUNCHD_PLIST)]
+        result = subprocess.run(
+            action,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            logger.error("Failed to start daemon through launchd (exit %d)", result.returncode)
+            return False
+    except (OSError, subprocess.TimeoutExpired):
+        logger.exception("Failed to invoke launchd for the reminder daemon")
+        return False
+
+    from plan_tracker.daemon import is_running, read_pid
+    deadline = time.monotonic() + _DAEMON_START_TIMEOUT
+    while time.monotonic() < deadline:
+        if is_running():
+            logger.info("Daemon started through launchd (PID: %d)", read_pid())
+            return True
+        time.sleep(0.5)
+    logger.error("launchd accepted the daemon service, but no daemon acquired the PID lock")
+    return False
 
 
 def _ensure_daemon() -> bool:
@@ -521,6 +575,9 @@ def _ensure_daemon() -> bool:
         if is_running():
             logger.debug("Daemon already running (PID: %d) — started after lock wait", read_pid())
             return True
+
+        if _supports_launchd():
+            return _start_daemon_via_launchd()
 
         logger.info("Daemon not running — starting...")
         pkg_path = str(Path(__file__).resolve().parent.parent)

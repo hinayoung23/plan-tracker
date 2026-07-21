@@ -43,6 +43,7 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from xml.sax.saxutils import escape as _xml_escape
 from pathlib import Path
 
@@ -59,6 +60,12 @@ _DEFAULT_CRON_FILE = _DEFAULT_OPENCLAW_CRON_DIR / "jobs.json"
 _LAUNCHD_LABEL = "com.plan-tracker.daemon"
 _LAUNCHD_PLIST_DIR = Path.home() / "Library" / "LaunchAgents"
 _LAUNCHD_PLIST_PATH = _LAUNCHD_PLIST_DIR / f"{_LAUNCHD_LABEL}.plist"
+_DAEMON_TRANSITION_TIMEOUT = 10
+
+
+def _supports_launchd() -> bool:
+    """Return whether this host should use launchd for daemon persistence."""
+    return sys.platform == "darwin"
 
 
 def _runtime_python() -> str:
@@ -441,7 +448,11 @@ def _launchctl_error(action: str, result: subprocess.CompletedProcess[str]) -> R
     return RuntimeError(f"launchctl {action} failed (exit {result.returncode}){suffix}")
 
 
-def _reload_launchd_service(label: str, plist_path: Path) -> None:
+def _reload_launchd_service(
+    label: str,
+    plist_path: Path,
+    before_bootstrap: Callable[[], None] | None = None,
+) -> None:
     """Reload a per-user launchd service and verify it is registered."""
     domain = f"gui/{os.getuid()}"
     target = _launchd_service_target(label)
@@ -449,6 +460,8 @@ def _reload_launchd_service(label: str, plist_path: Path) -> None:
     # A missing service is expected on first install.  If bootout failed for
     # another reason, bootstrap/verification below will surface the failure.
     _launchctl(["bootout", target])
+    if before_bootstrap is not None:
+        before_bootstrap()
     loaded = _launchctl(["bootstrap", domain, str(plist_path)])
     if loaded.returncode != 0:
         raise _launchctl_error("bootstrap", loaded)
@@ -466,6 +479,38 @@ def _unload_launchd_service(label: str) -> None:
     probe = _launchctl(["print", target])
     if probe.returncode == 0:
         raise _launchctl_error("bootout", result)
+
+
+def _stop_existing_daemon_for_launchd() -> None:
+    """Stop a daemon left outside launchd before bootstrapping the service."""
+    if not is_running():
+        return
+    pid = read_pid()
+    if pid is None:
+        raise RuntimeError("daemon is running but its PID record is unavailable")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        remove_pid()
+        return
+    except PermissionError as exc:
+        raise RuntimeError(f"cannot stop existing daemon PID {pid}: {exc}") from exc
+
+    deadline = time.monotonic() + _DAEMON_TRANSITION_TIMEOUT
+    while time.monotonic() < deadline:
+        if not is_running():
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"daemon PID {pid} did not stop within {_DAEMON_TRANSITION_TIMEOUT}s")
+
+
+def _wait_for_daemon_start() -> bool:
+    deadline = time.monotonic() + _DAEMON_TRANSITION_TIMEOUT
+    while time.monotonic() < deadline:
+        if is_running():
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def _install_launchd_plist(dry_run: bool = False) -> bool:
@@ -496,7 +541,15 @@ def _install_launchd_plist(dry_run: bool = False) -> bool:
     if changed:
         _LAUNCHD_PLIST_PATH.write_text(plist_content)
     try:
-        _reload_launchd_service(_LAUNCHD_LABEL, _LAUNCHD_PLIST_PATH)
+        _reload_launchd_service(
+            _LAUNCHD_LABEL,
+            _LAUNCHD_PLIST_PATH,
+            before_bootstrap=_stop_existing_daemon_for_launchd,
+        )
+        if not _wait_for_daemon_start():
+            raise RuntimeError(
+                f"launchd registered {_LAUNCHD_LABEL}, but the daemon did not start"
+            )
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -508,6 +561,10 @@ def cmd_daemon_start() -> None:
     """Start the daemon in background."""
     if is_running():
         print(f"Daemon is already running (PID: {read_pid()})")
+        return
+
+    if _supports_launchd():
+        _install_launchd_plist()
         return
 
     env = {**os.environ, "PYTHONPATH": _detect_plan_tracker_path()}
@@ -1028,19 +1085,27 @@ def cmd_setup(dry_run: bool = False) -> None:
     else:
         print("\n[1/2] OpenClaw config not found at ~/.openclaw/openclaw.json")
         print("       Skipping MCP server registration.")
-    print(f"\n[2/2] Ensuring daemon is running...")
-    if dry_run:
-        print("       (dry-run — skipping daemon start)")
-    elif is_running():
-        print(f"       Daemon already running (PID: {read_pid()})")
+    if _supports_launchd():
+        print(f"\n[2/2] Installing persistent daemon LaunchAgent...")
+        _install_launchd_plist(dry_run=dry_run)
     else:
-        cmd_daemon_start()
+        print(f"\n[2/2] Ensuring daemon is running...")
+        if dry_run:
+            print("       (dry-run — skipping daemon start)")
+        elif is_running():
+            print(f"       Daemon already running (PID: {read_pid()})")
+        else:
+            cmd_daemon_start()
     print(f"\n{'─' * 40}")
     print("Setup complete!")
     if config_path:
         print(f"  • MCP server registered in {config_path}")
-    print(f"  • Daemon: {'running' if is_running() else 'pending (will auto-start on first MCP call)'}")
-    print(f"  • Daemon persistence: MCP server watchdog (auto-revive every 5 min)")
+    if dry_run:
+        print("  • Daemon: dry-run (not changed)")
+    else:
+        print(f"  • Daemon: {'running' if is_running() else 'not running'}")
+    persistence = "launchd KeepAlive" if _supports_launchd() else "MCP server watchdog"
+    print(f"  • Daemon persistence: {persistence}")
     print(f"\n  Next step — set up notification polling (optional):")
     print(f"    python -m plan_tracker.cli cron-setup --help")
 

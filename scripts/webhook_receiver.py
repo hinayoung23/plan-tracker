@@ -19,6 +19,7 @@ Channel and target are read from webhook_delivery.json (set by webhook-setup).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -133,8 +134,13 @@ DELIVERY_OK = True          # delivered + acked successfully
 DELIVERY_FAIL = False       # fetch/send/ack failed, retry
 
 
+def _idempotency_key(notification_id: str) -> str:
+    """Return a stable, opaque key for exactly one queue notification."""
+    return hashlib.sha256(notification_id.encode("ascii")).hexdigest()[:16]
+
+
 def _deliver_pending(channel: str, to: str):
-    """Fetch undelivered notifications, relay to user, and ack on success.
+    """Fetch undelivered notifications, relay each one, and ack individually.
 
     Returns:
         DELIVERY_EMPTY (None): nothing pending.
@@ -166,74 +172,76 @@ def _deliver_pending(channel: str, to: str):
     if not pending:
         return DELIVERY_EMPTY
 
-    lines, ids = [], []
-    for note in pending:
-        if not isinstance(note, dict) or not re.fullmatch(r"[0-9a-f]{12}", str(note.get("id", ""))):
-            logger.error("fetch command returned a malformed notification")
-            return DELIVERY_FAIL
-        note_id = str(note["id"])
-        ids.append(note_id)
-        lines.append(f"--- [{note.get('type', 'unknown')}] {note.get('plan_title', '')} ---")
-        lines.append(str(note.get("message", "")))
-        lines.append(f"(id: {note_id})")
-        lines.append("")
-    text = "\n".join(lines).rstrip()
-
-    logger.info("Fetched %d notification(s), %d chars", len(ids), len(text))
+    logger.info("Fetched %d notification(s)", len(pending))
 
     # Step 2: deliver via plan-tracker-deliver (stdin, no argv leak).
     if _OPENCLAW_BIN is None:
         logger.error("openclaw binary not found — cannot deliver")
-        return False
+        return DELIVERY_FAIL
 
-    delivered = False
-    # Idempotency key: hash of sorted batch IDs so retrying the same
-    # batch doesn't produce duplicate deliveries, but a different batch
-    # (e.g., C added after A,B) gets a fresh key.
-    import hashlib
-    batch_key = hashlib.sha256(",".join(sorted(ids)).encode()).hexdigest()[:16]
-    payload = json.dumps({
-        "channel": channel,
-        "target": to,
-        "message": text,
-        "idempotencyKey": batch_key,
-    })
-    try:
-        msg_result = subprocess.run(
-            [_OPENCLAW_BIN, "plan-tracker-deliver"],
-            input=payload, text=True, capture_output=True, timeout=15,
-            env={**__import__("os").environ,
-                 "PATH": f"{Path(_OPENCLAW_BIN).parent}:{__import__('os').environ.get('PATH', '')}"},
-        )
-        if msg_result.returncode == 0:
-            logger.info("Delivered %d notification(s) via %s", len(ids), channel)
-            delivered = True
-        else:
-            # Don't log stderr — may contain message fragments
+    failed = False
+    delivered_count = 0
+    for note in pending:
+        if not isinstance(note, dict) or not re.fullmatch(
+            r"[0-9a-f]{12}", str(note.get("id", ""))
+        ):
+            logger.error("fetch command returned a malformed notification")
+            failed = True
+            continue
+
+        note_id = str(note["id"])
+        title = f"--- [{note.get('type', 'unknown')}] {note.get('plan_title', '')} ---"
+        # Queue IDs are transport metadata.  Keep them out of user-visible
+        # content; the opaque hash below is used only by the gateway.
+        text = f"{title}\n{str(note.get('message', ''))}".rstrip()
+        payload = json.dumps({
+            "channel": channel,
+            "target": to,
+            "message": text,
+            "idempotencyKey": _idempotency_key(note_id),
+        })
+
+        try:
+            msg_result = subprocess.run(
+                [_OPENCLAW_BIN, "plan-tracker-deliver"],
+                input=payload, text=True, capture_output=True, timeout=15,
+                env={**os.environ,
+                     "PATH": f"{Path(_OPENCLAW_BIN).parent}:{os.environ.get('PATH', '')}"},
+            )
+        except Exception:
+            logger.exception("delivery failed")
+            failed = True
+            continue
+
+        if msg_result.returncode != 0:
+            # Don't log stderr — it may contain message fragments.
             logger.error("delivery failed (rc=%d)", msg_result.returncode)
-    except Exception:
-        logger.exception("delivery failed")
+            failed = True
+            continue
 
-    # Step 3: ack only on success. If ack fails, treat delivery as
-    # failed so the notification stays in queue for retry.
-    if delivered and ids:
+        # Step 3: ack this notification immediately.  A failure affects only
+        # this item; later notifications still get their own delivery attempt.
         try:
             ack_result = subprocess.run(
-                [_PYTHON, "-m", "plan_tracker.cli", "notification", "ack"] + ids,
+                [_PYTHON, "-m", "plan_tracker.cli", "notification", "ack", note_id],
                 capture_output=True, text=True, timeout=10,
                 cwd=str(_PKG_DIR),
             )
             if ack_result.returncode == 0:
-                logger.info("Acked %d notification(s)", len(ids))
+                delivered_count += 1
             else:
-                logger.error("ack failed (rc=%d): %s — notifs will be re-delivered",
-                            ack_result.returncode, ack_result.stderr.strip())
-                delivered = False
+                logger.error(
+                    "ack failed (rc=%d) — notification will be re-delivered",
+                    ack_result.returncode,
+                )
+                failed = True
         except Exception:
-            logger.exception("ack command failed — notifications will be re-delivered")
-            delivered = False
+            logger.exception("ack command failed — notification will be re-delivered")
+            failed = True
 
-    return delivered
+    if delivered_count:
+        logger.info("Delivered and acked %d notification(s) via %s", delivered_count, channel)
+    return DELIVERY_FAIL if failed else DELIVERY_OK
 
 
 # ── Smart Poller ─────────────────────────────────────────────────

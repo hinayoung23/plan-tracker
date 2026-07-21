@@ -21,8 +21,8 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 - **Analysis** — Progress deviation, pace ratio, remaining effort estimates, morale trends
 - **Daily Reminders** — Morning check-in (default 08:30) + evening review (default 21:30) with 10-min auto-timeout
 - **Milestone Reminders** — Event-scheduled engine fires reminders at exact configured times, with startup catch-up for missed reminders
-- **Auto-start Daemon** — MCP Server auto-starts the daemon on first use with a watchdog thread
-- **Notification delivery** — Webhook real-time push + queue fallback; auto-detects delivery channel; supports QQ/Telegram/Slack etc.
+- **Persistent Daemon** — macOS uses a launchd `KeepAlive` service so reminder delivery never inherits an AI/MCP sandbox; other platforms retain the MCP watchdog fallback
+- **Notification delivery** — Webhook real-time push + queue fallback; each notification is sent and acknowledged independently; supports QQ/Telegram/Slack etc.
 
 ### Requirements
 
@@ -41,19 +41,19 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 #### Option 2: pip
 
 ```bash
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.0-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.1-py3-none-any.whl
 ```
 
 ### Setup
 
 ```bash
-# One command to register MCP server + start daemon
+# One command to register MCP server + install/start the daemon service
 python -m plan_tracker.cli setup
 ```
 
 `setup` automates:
 1. ✅ Registers the MCP server in `~/.openclaw/openclaw.json` (auto-detects Python path)
-2. ✅ Starts the daemon (MCP Server watchdog auto-revives it)
+2. ✅ Installs and starts a persistent launchd daemon on macOS (MCP watchdog fallback on other platforms)
 
 > Notification delivery: webhook real-time push is recommended (`webhook-setup`), with queue polling as fallback.
 
@@ -149,8 +149,8 @@ MIT
 - **计划分析** — 计算进度偏差、节奏系数、剩余工时预估、心情趋势
 - **定时提醒** — 基于事件调度，按时触发每日早晚提醒、过期/即将到期/停滞的里程碑检测
 - **每日提醒** — 早晚两次提醒：早晨进度提醒（默认 08:30）+ 晚间完成确认（默认 21:30），支持 10 分钟超时自动判定
-- **自动拉起** — MCP Server 启动时自动检查并拉起守护进程，附带 watchdog 线程守护存活
-- **通知投递** — Webhook 实时推送 + 通知队列兜底，支持多平台（QQ/Telegram/Slack 等），无需轮询
+- **持久守护进程** — macOS 使用 launchd `KeepAlive`，避免继承 AI/MCP 运行环境的网络沙箱；其他平台保留 MCP watchdog 兜底
+- **通知投递** — Webhook 实时推送 + 通知队列兜底，每条通知独立发送、独立确认，支持 QQ/Telegram/Slack 等平台
 
 ### 环境要求
 
@@ -173,7 +173,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.0-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.1-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
@@ -195,7 +195,7 @@ python -m plan_tracker.cli setup --dry-run
 
 `setup` 自动完成：
 1. ✅ 在 `~/.openclaw/openclaw.json` 中注册 MCP Server（自动检测 Python 路径）
-2. ✅ 启动守护进程（MCP Server 内置 watchdog 线程每 5 分钟检测存活，挂了自动拉起）
+2. ✅ macOS 安装并启动 launchd 持久守护服务（其他平台由 MCP watchdog 自动拉起）
 
 > 通知投递推荐使用 Webhook 实时推送（`webhook-setup`），也支持队列轮询（`deliver` + cron）。
 
@@ -275,9 +275,9 @@ Checkin
 
 Plan Tracker 的提醒功能通过**独立守护进程**运行，支持自动拉起，无需手动管理：
 
-#### MCP Server 自动拉起
+#### 持久化与自动拉起
 
-当 AI 助手首次调用 plan-tracker MCP 工具时，`server.py` 会自动检查并启动守护进程，同时启动 watchdog 线程每 5 分钟检测守护进程存活状态，挂了自动拉起。
+在 macOS 上，`setup` 会安装 `com.plan-tracker.daemon` LaunchAgent，并由 launchd `KeepAlive` 托管。这样 daemon 不会继承 OpenClaw、Codex 等宿主的网络沙箱。其他平台由 `server.py` 的 watchdog 每 5 分钟检测并自动拉起。
 
 #### 手动管理
 

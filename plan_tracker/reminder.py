@@ -19,7 +19,10 @@ from plan_tracker.file_lock import LockedFile
 
 from plan_tracker.storage import INDEX_FILE, DATA_DIR, load_plan, load_index
 from plan_tracker.notification import EmailChannel, WebhookChannel
-from plan_tracker.notification_queue import enqueue as enqueue_notification
+from plan_tracker.notification_queue import (
+    enqueue as enqueue_notification,
+    fetch_all as fetch_pending_notifications,
+)
 from plan_tracker.daily_tracker import (
     get_today_state,
     record_checkin_reminded,
@@ -113,6 +116,7 @@ class ReminderEngine:
         self._stop.clear()
         self._cleanup_notification_queue()
         self._check_all()
+        self._wake_pending_notifications()
         self._schedule_catchup_timeouts()
         self._schedule_all_events()  # includes queue cleanup at 03:00
         self._thread = threading.Thread(
@@ -144,6 +148,7 @@ class ReminderEngine:
                     RESCHEDULE_MARKER.unlink()
                     logger.info("Reschedule marker detected — reloading events")
                     self._schedule_all_events()
+                self._wake_pending_notifications()
             except OSError:
                 pass
 
@@ -499,6 +504,41 @@ class ReminderEngine:
                 logger.info("Trimmed %d old daily state entries", trimmed)
         except Exception:
             logger.debug("Daily state trim skipped", exc_info=True)
+
+    def _wake_pending_notifications(self) -> None:
+        """Retry webhook wake-ups for queued notifications after an outage.
+
+        The receiver owns actual delivery and reads the private queue.  This
+        sends an empty, non-sensitive wake-up once per configured endpoint;
+        it never duplicates queue entries or includes plan content.
+        """
+        try:
+            pending = fetch_pending_notifications()
+        except Exception:
+            logger.debug("Pending notification check skipped", exc_info=True)
+            return
+        if not pending:
+            return
+
+        endpoints: dict[str, dict] = {}
+        for note in pending:
+            plan_name = note.get("plan_name", "")
+            if not plan_name:
+                continue
+            plan = load_plan(plan_name)
+            if not plan:
+                continue
+            reminders = plan.get("reminders", {})
+            if "webhook" not in reminders.get("notification_channels", []):
+                continue
+            config = reminders.get("webhook", {})
+            url = config.get("url", "")
+            if url:
+                endpoints.setdefault(url, config)
+
+        wakeup = {"type": "queue_wakeup", "message": "", "plan_title": ""}
+        for config in endpoints.values():
+            WebhookChannel(config).send(wakeup, "__queue__", "", "")
 
     def _fire_queue_cleanup(self, _plan_name: str) -> None:
         """Periodic callback to purge delivered notifications."""

@@ -11,13 +11,12 @@ Covers the failure modes that smoke tests don't:
   - JS plugin registration structure
   - Lock mechanism consistency
   - Crash-safe write pattern
-  - Idempotency key batch hashing
+  - Per-notification delivery boundaries and idempotency
 
 Run: python test_integration.py
 """
 
 import contextlib
-import hashlib
 import importlib
 import inspect
 import io
@@ -219,29 +218,83 @@ def test_crash_safe_write_pattern():
     # This is hard to verify statically, but we can check that tmp+rename is the pattern
 
 
-# ── Test 6: Idempotency key uses batch hash ──────────────────────
+# ── Test 6: each notification is an independent user message ─────
 
-def test_idempotency_key_batch_hash():
-    """Idempotency key must change when batch content changes."""
-    ids_a = ["a", "b", "c"]
-    ids_b = ["a", "b", "c", "d"]
-    ids_c = ["b", "a", "c"]  # same content, different order
+def test_per_notification_delivery_and_idempotency():
+    """Each queue item is sent/acked alone and transport IDs stay invisible."""
+    import importlib.util
+    import subprocess
 
-    key_a = hashlib.sha256(",".join(sorted(ids_a)).encode()).hexdigest()[:16]
-    key_b = hashlib.sha256(",".join(sorted(ids_b)).encode()).hexdigest()[:16]
-    key_c = hashlib.sha256(",".join(sorted(ids_c)).encode()).hexdigest()[:16]
+    spec = importlib.util.spec_from_file_location(
+        "webhook_receiver_delivery",
+        str(Path(__file__).resolve().parent / "scripts" / "webhook_receiver.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod._OPENCLAW_BIN = "/usr/local/bin/openclaw"
 
-    # Different batches → different keys
-    assert key_a != key_b, "Different batches must have different keys"
+    notes = [
+        {
+            "id": "111111111111", "type": "daily_checkin",
+            "plan_title": "Plan", "message": "Morning message",
+        },
+        {
+            "id": "222222222222", "type": "daily_review",
+            "plan_title": "Plan", "message": "Evening message",
+        },
+    ]
 
-    # Same batch (reordered) → same key (idempotent)
-    assert key_a == key_c, "Same batch must have same key regardless of order"
+    def exercise(fail_send_indexes=()):
+        payloads, acked = [], []
 
-    # Verify the receiver code uses this pattern
-    receiver_src = (Path(__file__).resolve().parent /
-                    "scripts" / "webhook_receiver.py").read_text()
-    assert "hashlib" in receiver_src, "Receiver must use hashlib for batch key"
-    assert "sorted(" in receiver_src, "Receiver must sort IDs for stable hash"
+        def fake_run(command, **kwargs):
+            if command[-2:] == ["notification", "fetch"]:
+                return subprocess.CompletedProcess(
+                    command, 0,
+                    json.dumps({"success": True, "notifications": notes}), "",
+                )
+            if command[-1] == "plan-tracker-deliver":
+                payloads.append(json.loads(kwargs["input"]))
+                index = len(payloads) - 1
+                return subprocess.CompletedProcess(
+                    command, 7 if index in fail_send_indexes else 0, "", "",
+                )
+            if command[-2] == "ack":
+                acked.append(command[-1])
+                return subprocess.CompletedProcess(command, 0, "", "")
+            raise AssertionError(f"unexpected command: {command}")
+
+        original_run = mod.subprocess.run
+        mod.subprocess.run = fake_run
+        try:
+            result = mod._deliver_pending("qqbot", "private-target")
+        finally:
+            mod.subprocess.run = original_run
+        return result, payloads, acked
+
+    result, payloads, acked = exercise()
+    assert result is mod.DELIVERY_OK
+    assert len(payloads) == 2, "Notifications were combined into one user message"
+    assert acked == ["111111111111", "222222222222"], \
+        "Notifications were not acknowledged individually"
+    assert payloads[0]["idempotencyKey"] == mod._idempotency_key("111111111111")
+    assert payloads[1]["idempotencyKey"] == mod._idempotency_key("222222222222")
+    assert payloads[0]["idempotencyKey"] != payloads[1]["idempotencyKey"]
+    for payload in payloads:
+        assert "(id:" not in payload["message"]
+        assert "111111111111" not in payload["message"]
+        assert "222222222222" not in payload["message"]
+
+    old_disable = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+    try:
+        result, payloads, acked = exercise(fail_send_indexes={0})
+    finally:
+        logging.disable(old_disable)
+    assert result is mod.DELIVERY_FAIL
+    assert len(payloads) == 2, "One failed notification blocked later delivery"
+    assert acked == ["222222222222"], \
+        "A failed notification was acked or blocked a successful one"
 
 
 # ── Test 7: Tri-state backoff logic ──────────────────────────────
@@ -523,6 +576,107 @@ def test_launchd_reload_reports_bootstrap_failure():
     assert cli._webhook_receiver_script_path().is_file()
 
 
+def test_macos_daemon_deployment_uses_launchd():
+    """macOS setup/start must not fork a daemon that inherits the caller sandbox."""
+    import plan_tracker.cli as cli
+
+    original_supports = cli._supports_launchd
+    original_config_path = cli._openclaw_config_path
+    original_install = cli._install_launchd_plist
+    original_is_running = cli.is_running
+    installs = []
+    try:
+        cli._supports_launchd = lambda: True
+        cli._openclaw_config_path = lambda: None
+        cli._install_launchd_plist = (
+            lambda dry_run=False: installs.append(dry_run) or True
+        )
+        cli.is_running = lambda: True
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_setup()
+        assert installs == [False], "macOS setup did not install the daemon LaunchAgent"
+
+        installs.clear()
+        cli.is_running = lambda: False
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_daemon_start()
+        assert installs == [False], "macOS daemon start bypassed launchd"
+    finally:
+        cli._supports_launchd = original_supports
+        cli._openclaw_config_path = original_config_path
+        cli._install_launchd_plist = original_install
+        cli.is_running = original_is_running
+
+    assert "--daemon" not in cli._LAUNCHD_PLIST_TEMPLATE, \
+        "launchd service must run the daemon in foreground mode"
+
+    events = []
+    original_launchctl = cli._launchctl
+
+    def fake_launchctl(args):
+        import subprocess
+        events.append(args[0])
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    cli._launchctl = fake_launchctl
+    try:
+        cli._reload_launchd_service(
+            "com.example.daemon",
+            Path("/tmp/example.plist"),
+            before_bootstrap=lambda: events.append("stop-existing"),
+        )
+    finally:
+        cli._launchctl = original_launchctl
+    assert events == ["bootout", "stop-existing", "bootstrap", "print"], \
+        "existing daemon was not stopped between bootout and bootstrap"
+
+    server_source = (Path(__file__).resolve().parent / "plan_tracker" / "server.py").read_text()
+    ensure_source = server_source[
+        server_source.find("def _ensure_daemon"):server_source.find("def _daemon_watchdog")
+    ]
+    assert "_start_daemon_via_launchd" in ensure_source
+    assert ensure_source.find("_start_daemon_via_launchd") < ensure_source.find("subprocess.Popen"), \
+        "macOS launchd branch must run before the direct subprocess fallback"
+
+
+def test_pending_queue_gets_webhook_wakeup_retry():
+    """A recovered daemon must wake the receiver for notifications already queued."""
+    _setup_test_env()
+    import plan_tracker.reminder as reminder
+    import plan_tracker.storage as storage
+    from plan_tracker.notification_queue import enqueue
+    from plan_tracker.plan_manager import create_plan, delete_plan
+
+    create_plan("wake-retry", "Wake Retry", "Test", "2026-12-31")
+
+    def configure(plan):
+        plan["reminders"] = {
+            "enabled": True,
+            "notification_channels": ["mcp", "webhook"],
+            "webhook": {"url": "http://127.0.0.1:9876"},
+        }
+
+    storage.modify_plan_and_index("wake-retry", configure)
+    enqueue("wake-retry", "daily_review", "private message", "Private title")
+
+    calls = []
+    original_send = reminder.WebhookChannel.send
+    reminder.WebhookChannel.send = (
+        lambda self, message, plan_name, milestone_title, milestone_id:
+        calls.append((self.config["url"], message, plan_name)) or True
+    )
+    try:
+        reminder.ReminderEngine()._wake_pending_notifications()
+    finally:
+        reminder.WebhookChannel.send = original_send
+        delete_plan("wake-retry")
+
+    assert len(calls) == 1, "Pending queue did not trigger exactly one endpoint wake-up"
+    assert calls[0][0] == "http://127.0.0.1:9876"
+    assert calls[0][1]["message"] == "", "Queue wake-up exposed notification content"
+    assert calls[0][2] == "__queue__", "Queue wake-up exposed a plan identifier"
+
+
 # ── main ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -532,7 +686,7 @@ if __name__ == "__main__":
         ("js_plugin_registration_structure", test_js_plugin_registration_structure),
         ("lock_mechanism_consistency", test_lock_mechanism_consistency),
         ("crash_safe_write_pattern", test_crash_safe_write_pattern),
-        ("idempotency_key_batch_hash", test_idempotency_key_batch_hash),
+        ("per_notification_delivery", test_per_notification_delivery_and_idempotency),
         ("tri_state_backoff", test_tri_state_backoff),
         ("index_cache_self_heals", test_index_cache_self_heals_after_refresh_failure),
         ("delete_missing_body_cleans_orphans", test_delete_missing_body_cleans_orphans),
@@ -541,6 +695,8 @@ if __name__ == "__main__":
         ("stale_tmp_permissions", test_stale_tmp_permissions_are_reset),
         ("setup_cli_privacy", test_setup_cli_has_no_secret_argv_options),
         ("launchd_failure_reporting", test_launchd_reload_reports_bootstrap_failure),
+        ("macos_launchd_daemon", test_macos_daemon_deployment_uses_launchd),
+        ("pending_queue_wakeup", test_pending_queue_gets_webhook_wakeup_retry),
     ]
 
     failed = 0
