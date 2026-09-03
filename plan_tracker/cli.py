@@ -37,6 +37,7 @@ Exit code 0 on success, 1 on failure.
 import argparse
 import json
 import os
+import re
 import shlex
 import signal
 import stat
@@ -685,7 +686,11 @@ def _webhook_receiver_script_path() -> Path:
     raise FileNotFoundError("webhook receiver is missing from this installation")
 
 
-def _detect_delivery_channel() -> tuple[str, str]:
+_DEFAULT_AGENT_ID = "main"
+_AGENT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$", re.IGNORECASE)
+
+
+def _detect_delivery_channel() -> tuple[str, str, str]:
     config_path = Path.home() / ".openclaw" / "openclaw.json"
     channel, to = "qqbot", ""
     if config_path.exists():
@@ -712,11 +717,11 @@ def _detect_delivery_channel() -> tuple[str, str]:
             pass
     if to and not to.startswith(f"{channel}:"):
         to = f"{channel}:c2c:{to}" if channel == "qqbot" else f"{channel}:{to}"
-    return channel, to
+    return channel, to, _DEFAULT_AGENT_ID
 
 
-def _read_private_delivery_config(config_path: str | Path) -> tuple[str, str]:
-    """Read channel/target from a private JSON file without argv secrets."""
+def _read_private_delivery_config(config_path: str | Path) -> tuple[str, str, str]:
+    """Read channel, target, and agent ID from a private JSON file."""
     path = Path(config_path).expanduser()
     fd = -1
     try:
@@ -749,19 +754,24 @@ def _read_private_delivery_config(config_path: str | Path) -> tuple[str, str]:
 
     channel = data.get("channel", "") if isinstance(data, dict) else ""
     to = (data.get("to") or data.get("target") or "") if isinstance(data, dict) else ""
+    agent_id = data.get("agentId", _DEFAULT_AGENT_ID) if isinstance(data, dict) else ""
     if not isinstance(channel, str) or not channel.strip():
         raise ValueError("delivery config requires a string 'channel'")
     if not isinstance(to, str) or not to.strip():
         raise ValueError("delivery config requires a string 'to' or 'target'")
-    channel, to = channel.strip(), to.strip()
+    if not isinstance(agent_id, str) or not agent_id.strip():
+        raise ValueError("delivery config 'agentId' must be a non-empty string")
+    channel, to, agent_id = channel.strip(), to.strip(), agent_id.strip()
     if len(channel) > 64 or len(to) > 1024:
         raise ValueError("delivery channel or target is too long")
-    if any(ord(ch) < 32 for ch in channel + to):
-        raise ValueError("delivery channel and target must not contain control characters")
-    return channel, to
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in channel + to + agent_id):
+        raise ValueError("delivery channel, target, and agentId must not contain control characters")
+    if not _AGENT_ID_RE.fullmatch(agent_id):
+        raise ValueError("delivery agentId must be a valid OpenClaw agent ID")
+    return channel, to, agent_id.lower()
 
 
-def _resolve_delivery_config(config_path: str = "") -> tuple[str, str]:
+def _resolve_delivery_config(config_path: str = "") -> tuple[str, str, str]:
     if config_path:
         return _read_private_delivery_config(config_path)
 
@@ -785,13 +795,14 @@ def cmd_webhook_setup(port: int = 9876, delivery_config_path: str = "",
         print("Error: port must be between 1 and 65535", file=sys.stderr)
         sys.exit(1)
     try:
-        channel, to = _resolve_delivery_config(delivery_config_path)
+        channel, to, agent_id = _resolve_delivery_config(delivery_config_path)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
     if not to:
         print("Error: could not auto-detect delivery target.")
-        print("  Store channel/to in a 0600 JSON file and pass --delivery-config <path>.")
+        print("  Store channel/to and optional agentId in a 0600 JSON file and "
+              "pass --delivery-config <path>.")
         sys.exit(1)
 
     try:
@@ -805,7 +816,7 @@ def cmd_webhook_setup(port: int = 9876, delivery_config_path: str = "",
     os.chmod(DATA_DIR, 0o700)
     log_dir = str(DATA_DIR)
 
-    delivery_config = {"channel": channel, "to": to}
+    delivery_config = {"channel": channel, "to": to, "agentId": agent_id}
     if not dry_run:
         config_file = DATA_DIR / "webhook_delivery.json"
         # Atomic write — unlink stale tmp (may have wrong perms), create new
@@ -894,10 +905,10 @@ def cmd_cron_setup(
 ) -> None:
     errors: list[str] = []
     try:
-        channel, to = _resolve_delivery_config(delivery_config_path)
+        channel, to, agent_id = _resolve_delivery_config(delivery_config_path)
     except ValueError as exc:
         errors.append(str(exc))
-        channel, to = "", ""
+        channel, to, agent_id = "", "", _DEFAULT_AGENT_ID
     if not to:
         errors.append(
             "Could not auto-detect delivery target; use --delivery-config with a 0600 JSON file"
@@ -917,6 +928,7 @@ def cmd_cron_setup(
 
     job = {
         "id": job_id,
+        "agentId": agent_id,
         "name": "plan-tracker Notification Check",
         "description": (
             f"Poll plan-tracker notification queue every {interval_minutes} min "
@@ -1268,7 +1280,7 @@ def main() -> None:
 
     cron_parser = sub.add_parser("cron-setup", help="Install/update OpenClaw cron job")
     cron_parser.add_argument("--delivery-config", default="", metavar="PATH",
-                             help="0600 JSON file with channel and to/target (auto-detected if omitted)")
+                             help="0600 JSON file with channel, to/target, and optional agentId")
     cron_parser.add_argument("--interval", type=int, default=5, help="Polling interval in minutes")
     cron_parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
     cron_parser.add_argument("--job-id", default=_DEFAULT_CRON_JOB_ID, help="Cron job identifier")
@@ -1276,7 +1288,7 @@ def main() -> None:
     webhook_parser = sub.add_parser("webhook-setup", help="Install webhook receiver")
     webhook_parser.add_argument("--port", type=int, default=9876, help="Receiver port")
     webhook_parser.add_argument("--delivery-config", default="", metavar="PATH",
-                                help="0600 JSON file with channel and to/target (auto-detected if omitted)")
+                                help="0600 JSON file with channel, to/target, and optional agentId")
     webhook_parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
 
     # ── dispatch ───────────────────────────────────────────────

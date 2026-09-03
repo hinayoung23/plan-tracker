@@ -157,6 +157,8 @@ def test_js_plugin_registration_structure():
     # Must use callGatewayFromCli for delivery
     assert "callGatewayFromCli" in src, "Missing callGatewayFromCli"
     assert '"send"' in src, "Must call Gateway 'send' method"
+    assert 'agentId: payload.agentId?.trim().toLowerCase() || "main"' in src, \
+        "Delivery must select an explicit agent with a backward-compatible default"
 
     manifest = json.loads(
         (Path(__file__).resolve().parent / "openclaw.plugin.json").read_text()
@@ -267,7 +269,7 @@ def test_per_notification_delivery_and_idempotency():
         original_run = mod.subprocess.run
         mod.subprocess.run = fake_run
         try:
-            result = mod._deliver_pending("qqbot", "private-target")
+            result = mod._deliver_pending("qqbot", "private-target", "planning")
         finally:
             mod.subprocess.run = original_run
         return result, payloads, acked
@@ -281,6 +283,7 @@ def test_per_notification_delivery_and_idempotency():
     assert payloads[1]["idempotencyKey"] == mod._idempotency_key("222222222222")
     assert payloads[0]["idempotencyKey"] != payloads[1]["idempotencyKey"]
     for payload in payloads:
+        assert payload["agentId"] == "planning"
         assert "(id:" not in payload["message"]
         assert "111111111111" not in payload["message"]
         assert "222222222222" not in payload["message"]
@@ -312,7 +315,9 @@ def test_tri_state_backoff():
     mod._BACKOFF_SEQUENCE = [0.001, 0.002]
     try:
         empty_calls = []
-        mod._deliver_pending = lambda _channel, _to: empty_calls.append(1) or mod.DELIVERY_EMPTY
+        mod._deliver_pending = lambda _channel, _to, _agent_id: (
+            empty_calls.append(1) or mod.DELIVERY_EMPTY
+        )
         empty_poller = mod.SmartPoller("channel", "target")
         empty_poller._generation = 1
         empty_poller._poll_loop(1)
@@ -322,7 +327,7 @@ def test_tri_state_backoff():
         fail_poller = mod.SmartPoller("channel", "target")
         fail_poller._generation = 1
 
-        def fail_then_supersede(_channel, _to):
+        def fail_then_supersede(_channel, _to, _agent_id):
             fail_calls.append(1)
             if len(fail_calls) == 3:
                 fail_poller._generation = 2
@@ -493,7 +498,9 @@ def test_setup_cli_has_no_secret_argv_options():
     config = tmpdir / "delivery.json"
     config.write_text(json.dumps({"channel": "qqbot", "to": "qqbot:c2c:secret"}))
     os.chmod(config, 0o600)
-    assert cli._read_private_delivery_config(config) == ("qqbot", "qqbot:c2c:secret")
+    assert cli._read_private_delivery_config(config) == (
+        "qqbot", "qqbot:c2c:secret", "main",
+    )
     os.chmod(config, 0o644)
     try:
         cli._read_private_delivery_config(config)
@@ -510,11 +517,40 @@ def test_setup_cli_has_no_secret_argv_options():
         pass
 
     os.chmod(config, 0o600)
+    config.write_text(json.dumps({
+        "channel": "qqbot", "to": "qqbot:c2c:secret", "agentId": "planning",
+    }))
+    assert cli._read_private_delivery_config(config) == (
+        "qqbot", "qqbot:c2c:secret", "planning",
+    )
     preview_output = io.StringIO()
     with contextlib.redirect_stdout(preview_output):
         cli.cmd_webhook_setup(delivery_config_path=str(config), dry_run=True)
     assert "<key>ProgramArguments</key>" in preview_output.getvalue()
     assert "secret" not in preview_output.getvalue()
+
+    cron_output = io.StringIO()
+    with contextlib.redirect_stdout(cron_output), contextlib.redirect_stderr(io.StringIO()):
+        cli.cmd_cron_setup(delivery_config_path=str(config), dry_run=True)
+    assert json.loads(cron_output.getvalue())["agentId"] == "planning"
+
+    config.write_text(json.dumps({
+        "channel": "qqbot", "to": "qqbot:c2c:secret", "agentId": " ",
+    }))
+    try:
+        cli._read_private_delivery_config(config)
+        assert False, "Blank delivery agentId was accepted"
+    except ValueError:
+        pass
+
+    config.write_text(json.dumps({
+        "channel": "qqbot", "to": "qqbot:c2c:secret", "agentId": "bad agent",
+    }))
+    try:
+        cli._read_private_delivery_config(config)
+        assert False, "Invalid delivery agentId was accepted"
+    except ValueError:
+        pass
 
     assert "<key>Umask</key>" in source
     assert "PLAN_TRACKER_DATA_DIR" in source

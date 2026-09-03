@@ -13,7 +13,8 @@ eliminating unnecessary polling when there are no notifications.
 Usage:
   python scripts/webhook_receiver.py [--host 127.0.0.1] [--port 9876]
 
-Channel and target are read from webhook_delivery.json (set by webhook-setup).
+Channel, target, and agent ID are read from webhook_delivery.json
+(set by webhook-setup).
 """
 
 from __future__ import annotations
@@ -119,8 +120,8 @@ def _load_delivery_config() -> dict:
     """Load the delivery target through the CLI's private-file validator."""
     from plan_tracker.cli import _read_private_delivery_config
     try:
-        channel, to = _read_private_delivery_config(_DELIVERY_CONFIG)
-        return {"channel": channel, "to": to}
+        channel, to, agent_id = _read_private_delivery_config(_DELIVERY_CONFIG)
+        return {"channel": channel, "to": to, "agentId": agent_id}
     except ValueError as exc:
         logger.error("Invalid delivery configuration: %s", exc)
         return {}
@@ -139,7 +140,7 @@ def _idempotency_key(notification_id: str) -> str:
     return hashlib.sha256(notification_id.encode("ascii")).hexdigest()[:16]
 
 
-def _deliver_pending(channel: str, to: str):
+def _deliver_pending(channel: str, to: str, agent_id: str = "main"):
     """Fetch undelivered notifications, relay each one, and ack individually.
 
     Returns:
@@ -197,6 +198,7 @@ def _deliver_pending(channel: str, to: str):
         payload = json.dumps({
             "channel": channel,
             "target": to,
+            "agentId": agent_id,
             "message": text,
             "idempotencyKey": _idempotency_key(note_id),
         })
@@ -264,9 +266,10 @@ class SmartPoller:
        step 1, waiting for the next webhook POST.
     """
 
-    def __init__(self, channel: str, to: str):
+    def __init__(self, channel: str, to: str, agent_id: str = "main"):
         self._channel = channel
         self._to = to
+        self._agent_id = agent_id
         self._wakeup = threading.Event()
         self._lock = threading.Lock()
         self._deliver_lock = threading.Lock()  # serializes delivery calls
@@ -315,7 +318,7 @@ class SmartPoller:
             with self._deliver_lock:
                 if self._generation != my_generation:
                     return
-                result = _deliver_pending(self._channel, self._to)
+                result = _deliver_pending(self._channel, self._to, self._agent_id)
 
             if result is DELIVERY_OK:
                 backoff_idx = 0
@@ -430,6 +433,7 @@ def main():
     cfg = _load_delivery_config()
     channel = cfg.get("channel", "qqbot")
     to = cfg.get("to", "")
+    agent_id = cfg.get("agentId", "main")
 
     if not to:
         print("Error: no delivery target configured. "
@@ -440,10 +444,10 @@ def main():
     # ── Wire up handler + poller ────────────────────────────────
     WebhookHandler.channel = channel
     WebhookHandler.to = to
-    WebhookHandler.poller = SmartPoller(channel, to)
+    WebhookHandler.poller = SmartPoller(channel, to, agent_id)
 
     logger.info("Running initial queue drain...")
-    drain_result = _deliver_pending(channel, to)
+    drain_result = _deliver_pending(channel, to, agent_id)
     if drain_result is DELIVERY_OK:
         WebhookHandler.poller.wakeup()
     elif drain_result is DELIVERY_FAIL:

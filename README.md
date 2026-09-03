@@ -41,7 +41,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 #### Option 2: pip
 
 ```bash
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.1-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.2-py3-none-any.whl
 ```
 
 ### Setup
@@ -74,7 +74,10 @@ python -m plan_tracker.cli webhook-setup
 python -m plan_tracker.cli webhook-setup --delivery-config /path/to/private-delivery.json
 ```
 
-The private JSON file uses `{"channel":"qqbot","to":"qqbot:c2c:<id>"}`.
+The private JSON file uses
+`{"channel":"qqbot","to":"qqbot:c2c:<id>","agentId":"main"}`.
+`agentId` is optional and defaults to `main`; set it when notifications should
+be owned by another agent in a multi-agent OpenClaw setup.
 Edit it with a local editor or secret manager; the target is never accepted as
 a command-line value. The daemon POSTs notifications to a local webhook
 receiver, which delivers them through the privacy-safe
@@ -173,7 +176,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.1-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.2-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
@@ -299,7 +302,7 @@ python -m plan_tracker.cli webhook-setup
 python -m plan_tracker.cli webhook-setup --delivery-config /path/to/private-delivery.json
 ```
 
-私密 JSON 格式为 `{"channel":"qqbot","to":"qqbot:c2c:<id>"}`。请通过本地编辑器或密钥管理器创建，接收目标不再接受命令行传值。Daemon 生成通知后通过 Webhook POST 到本地 receiver，receiver 通过 stdin 调用 `openclaw plan-tracker-deliver` 实时推送到消息平台。通知同时写入队列作为兜底。
+私密 JSON 格式为 `{"channel":"qqbot","to":"qqbot:c2c:<id>","agentId":"main"}`。`agentId` 可省略，默认使用 `main`；多 Agent 环境需要投递到其他 Agent 时请显式设置。请通过本地编辑器或密钥管理器创建，接收目标不再接受命令行传值。Daemon 生成通知后通过 Webhook POST 到本地 receiver，receiver 通过 stdin 调用 `openclaw plan-tracker-deliver` 实时推送到消息平台。通知同时写入队列作为兜底。
 
 **方式二：队列轮询**
 

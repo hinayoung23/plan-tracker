@@ -23,6 +23,13 @@ function validatePayload(data) {
     throw new Error("payload channel or target is too long");
   if (/[\u0000-\u001f\u007f]/u.test(data.channel + data.target))
     throw new Error("payload channel or target contains control characters");
+  if (
+    data.agentId !== undefined &&
+    (typeof data.agentId !== "string" ||
+      !data.agentId.trim() ||
+      !/^[a-z0-9][a-z0-9_-]{0,63}$/iu.test(data.agentId.trim()))
+  )
+    throw new Error("payload.agentId must be a valid OpenClaw agent ID");
   if (Buffer.byteLength(data.message, "utf8") > 32768)
     throw new Error("payload.message too long (max 32 KiB)");
   if (
@@ -88,6 +95,7 @@ async function deliverNotification() {
         channel: payload.channel,
         to: payload.target,
         message: payload.message,
+        agentId: payload.agentId?.trim().toLowerCase() || "main",
         idempotencyKey: payload.idempotencyKey || undefined,
       },
       { progress: false, scopes: ["operator.write"] },
