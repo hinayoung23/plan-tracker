@@ -12,6 +12,10 @@ echo "=== Integration tests ==="
 python3 test_integration.py
 
 echo ""
+echo "=== Delivery process and retry tests ==="
+python3 test_delivery.py
+
+echo ""
 echo "=== JS syntax ==="
 node -c src/index.js
 

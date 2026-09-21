@@ -1,5 +1,19 @@
 # Plan Tracker MCP
 
+### 2.14.0: bounded notification delivery
+
+Notification CLI attempts now have a 90-second total budget, including startup
+and the 15-second gateway send timeout. Each attempt owns a separate process
+group and private temporary directory; success, failure and timeout all reclaim
+remaining child processes and scratch copies. Delivery pauses below 1 GiB of
+free temporary disk space.
+
+A transport failure stops the current batch without acknowledging unsent items.
+Retries wait 30, 60, 120, 240, 480 and 600 seconds, then probe at most once per
+hour until recovery. Incoming webhooks cannot shorten failure backoff. Successful
+delivery resets the failure delay. Plugin command activation is declared in the
+manifest, and CLI errors return control to the host for cleanup.
+
 [English](#english) | [中文](#chinese)
 
 ---
@@ -41,7 +55,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 #### Option 2: pip
 
 ```bash
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.2-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.14.0-py3-none-any.whl
 ```
 
 ### Setup
@@ -176,7 +190,7 @@ bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.13.2-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.14.0-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git

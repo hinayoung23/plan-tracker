@@ -75,7 +75,8 @@ async function deliverNotification() {
   let raw;
   try { raw = await readStdin(); } catch (e) {
     console.error(JSON.stringify({ ok: false, error: e.message }));
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   let payload;
   try {
@@ -83,11 +84,12 @@ async function deliverNotification() {
     validatePayload(payload);
   } catch (e) {
     console.error(JSON.stringify({ ok: false, error: e.message }));
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
-  const gw = await import("openclaw/plugin-sdk/gateway-runtime");
   try {
+    const gw = await import("openclaw/plugin-sdk/gateway-runtime");
     await gw.callGatewayFromCli(
       "send",
       { json: true, timeout: "15000" },
@@ -103,7 +105,7 @@ async function deliverNotification() {
     console.log(JSON.stringify({ ok: true }));
   } catch (e) {
     console.error(JSON.stringify({ ok: false, error: "delivery failed" }));
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 

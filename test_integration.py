@@ -267,11 +267,14 @@ def test_per_notification_delivery_and_idempotency():
             raise AssertionError(f"unexpected command: {command}")
 
         original_run = mod.subprocess.run
+        original_delivery = mod._run_delivery
         mod.subprocess.run = fake_run
+        mod._run_delivery = lambda payload: fake_run(["openclaw", "plan-tracker-deliver"], input=payload)
         try:
             result = mod._deliver_pending("qqbot", "private-target", "planning")
         finally:
             mod.subprocess.run = original_run
+            mod._run_delivery = original_delivery
         return result, payloads, acked
 
     result, payloads, acked = exercise()
@@ -295,9 +298,8 @@ def test_per_notification_delivery_and_idempotency():
     finally:
         logging.disable(old_disable)
     assert result is mod.DELIVERY_FAIL
-    assert len(payloads) == 2, "One failed notification blocked later delivery"
-    assert acked == ["222222222222"], \
-        "A failed notification was acked or blocked a successful one"
+    assert len(payloads) == 1, "Failed transport did not stop the batch"
+    assert acked == [], "A failed notification was acknowledged"
 
 
 # ── Test 7: Tri-state backoff logic ──────────────────────────────
@@ -312,6 +314,7 @@ def test_tri_state_backoff():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     old_backoff, old_deliver = mod._BACKOFF_SEQUENCE, mod._deliver_pending
+    mod._FAILURE_BACKOFF_SEQUENCE = [0.001, 0.002]
     mod._BACKOFF_SEQUENCE = [0.001, 0.002]
     try:
         empty_calls = []

@@ -26,8 +26,11 @@ import logging
 import logging.handlers
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -114,6 +117,52 @@ _OPENCLAW_BIN = _resolve_openclaw_bin()
 # After each empty poll the backoff doubles.  When the last level
 # returns empty the poller goes dormant until the next webhook POST.
 _BACKOFF_SEQUENCE = [30, 60, 120, 240, 480, 600]
+_FAILURE_BACKOFF_SEQUENCE = [30, 60, 120, 240, 480, 600, 3600]
+_DELIVERY_TIMEOUT = 90  # Includes CLI startup, plugin loading and the 15s send RPC.
+_PROCESS_EXIT_GRACE = 2
+_MIN_FREE_BYTES = 1024 ** 3
+
+
+def _stop_delivery_processes(process: subprocess.Popen) -> None:
+    """Reap the launcher and stop descendants even if the launcher exited first."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        process.wait()
+        return
+    deadline = time.monotonic() + _PROCESS_EXIT_GRACE
+    while time.monotonic() < deadline:
+        process.poll()
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process.wait()
+
+
+def _run_delivery(payload: str) -> subprocess.CompletedProcess:
+    """Own each CLI process tree and its scratch files for the entire attempt."""
+    if shutil.disk_usage(tempfile.gettempdir()).free < _MIN_FREE_BYTES:
+        raise OSError("delivery paused: less than 1 GiB of temporary disk space")
+    with tempfile.TemporaryDirectory(prefix="plan-tracker-delivery-") as scratch:
+        env = {**os.environ,
+               "PATH": f"{Path(_OPENCLAW_BIN).parent}:{os.environ.get('PATH', '')}",
+               "TMPDIR": scratch, "TMP": scratch, "TEMP": scratch}
+        command = [_OPENCLAW_BIN, "plan-tracker-deliver"]
+        with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, env=env,
+                              start_new_session=True) as process:
+            try:
+                stdout, stderr = process.communicate(payload, timeout=_DELIVERY_TIMEOUT)
+                return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            finally:
+                _stop_delivery_processes(process)
 
 
 def _load_delivery_config() -> dict:
@@ -204,22 +253,15 @@ def _deliver_pending(channel: str, to: str, agent_id: str = "main"):
         })
 
         try:
-            msg_result = subprocess.run(
-                [_OPENCLAW_BIN, "plan-tracker-deliver"],
-                input=payload, text=True, capture_output=True, timeout=15,
-                env={**os.environ,
-                     "PATH": f"{Path(_OPENCLAW_BIN).parent}:{os.environ.get('PATH', '')}"},
-            )
+            msg_result = _run_delivery(payload)
         except Exception:
             logger.exception("delivery failed")
-            failed = True
-            continue
+            return DELIVERY_FAIL
 
         if msg_result.returncode != 0:
             # Don't log stderr — it may contain message fragments.
             logger.error("delivery failed (rc=%d)", msg_result.returncode)
-            failed = True
-            continue
+            return DELIVERY_FAIL
 
         # Step 3: ack this notification immediately.  A failure affects only
         # this item; later notifications still get their own delivery attempt.
@@ -306,6 +348,7 @@ class SmartPoller:
         generation takes over."""
         backoff_idx = 0
         empty_streak = 0
+        failure_streak = 0
 
         while True:
             # ── Stale check ────────────────────────────────
@@ -321,19 +364,32 @@ class SmartPoller:
                 result = _deliver_pending(self._channel, self._to, self._agent_id)
 
             if result is DELIVERY_OK:
+                failure_streak = 0
                 backoff_idx = 0
                 empty_streak = 0
             elif result is DELIVERY_EMPTY:
+                failure_streak = 0
                 # Queue empty — increase backoff toward dormant
                 if backoff_idx < len(_BACKOFF_SEQUENCE) - 1:
                     backoff_idx += 1
                 empty_streak += 1
-            else:  # DELIVERY_FAIL — retry but don't stop
-                # Keep backoff low so we keep retrying
-                backoff_idx = max(0, backoff_idx - 1)
-                empty_streak = max(0, empty_streak - 1)
-                if backoff_idx < len(_BACKOFF_SEQUENCE) - 1:
-                    backoff_idx += 1
+            else:
+                failure_streak += 1
+                empty_streak = 0
+                delay = _FAILURE_BACKOFF_SEQUENCE[min(
+                    failure_streak - 1, len(_FAILURE_BACKOFF_SEQUENCE) - 1)]
+                logger.warning("Delivery failed; retry in %s seconds (failure %d)",
+                               delay, failure_streak)
+                # Webhooks may announce the same unacked queue every minute.
+                # They must not bypass failure backoff or the circuit cooldown.
+                deadline = time.monotonic() + delay
+                while time.monotonic() < deadline:
+                    with self._lock:
+                        if self._generation != my_generation:
+                            return
+                    self._wakeup.clear()
+                    self._wakeup.wait(timeout=max(0, deadline - time.monotonic()))
+                continue
 
             # ── Stop condition ─────────────────────────────
             if backoff_idx >= len(_BACKOFF_SEQUENCE) - 1 and empty_streak >= 1:
