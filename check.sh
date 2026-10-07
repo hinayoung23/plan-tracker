@@ -16,6 +16,10 @@ echo "=== Delivery process and retry tests ==="
 python3 test_delivery.py
 
 echo ""
+echo "=== OpenClaw runtime packaging ==="
+python3 test_openclaw_runtime.py
+
+echo ""
 echo "=== JS syntax ==="
 node -c src/index.js
 

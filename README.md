@@ -1,5 +1,17 @@
 # Plan Tracker MCP
 
+### 2.14.1: isolated OpenClaw runtime
+
+OpenClaw 2026.9.7 rejects plugin packages containing Python virtual-environment
+symlinks that point outside the package. This release builds an immutable,
+content-addressed runtime containing only JavaScript, plugin metadata, skills,
+documentation and the license. Python services and private data stay outside it.
+
+ClawHub and the plugin archive now ship this lightweight runtime without install
+hooks. Install the Python wheel separately as shown below; existing deployments
+can keep their Python environment and data. Building or upgrading the runtime
+does not clear notification queues or resend past reminders.
+
 ### 2.14.0: bounded notification delivery
 
 Notification CLI attempts now have a 90-second total budget, including startup
@@ -49,13 +61,21 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 
 ```bash
 openclaw plugins install clawhub:plan-tracker
-bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
+python3 -m venv "$HOME/.local/share/plan-tracker/venv"
+"$HOME/.local/share/plan-tracker/venv/bin/python" -m pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.1/plan_tracker-2.14.1-py3-none-any.whl
+"$HOME/.local/share/plan-tracker/venv/bin/python" -m plan_tracker.cli setup
 ```
+
+The marketplace package has no `scripts/setup.sh` or automatic Python install.
+Existing installations should keep their configured Python environment and data
+directory, and upgrade the wheel there. Activate that environment before running
+the Python commands below. Both the plugin and Python service are needed for
+notification delivery.
 
 #### Option 2: pip
 
 ```bash
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.14.0-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.1/plan_tracker-2.14.1-py3-none-any.whl
 ```
 
 ### Setup
@@ -179,18 +199,22 @@ MIT
 #### 方式一：OpenClaw 插件市场（推荐）
 
 ```bash
-# 一键安装
+# 安装轻量 OpenClaw 插件
 openclaw plugins install clawhub:plan-tracker
 
-# 初始化配置（Python 依赖 + MCP 注册 + daemon）
-bash ~/.openclaw/extensions/plan-tracker/scripts/setup.sh
+# 将 Python 服务安装到插件目录以外
+python3 -m venv "$HOME/.local/share/plan-tracker/venv"
+"$HOME/.local/share/plan-tracker/venv/bin/python" -m pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.1/plan_tracker-2.14.1-py3-none-any.whl
+"$HOME/.local/share/plan-tracker/venv/bin/python" -m plan_tracker.cli setup
 ```
+
+市场包不再包含 `scripts/setup.sh`，也不会自动创建 Python 虚拟环境。已有部署应保留原 Python 环境和数据目录，在原环境升级 wheel，避免重复配置服务。执行下方 Python 命令前先激活所选环境。通知投递需要同时安装插件和 Python 服务。
 
 #### 方式二：PyPI / pip
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/latest/download/plan_tracker-2.14.0-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.1/plan_tracker-2.14.1-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git
@@ -305,6 +329,18 @@ python -m plan_tracker.cli daemon stop
 ```
 
 #### 通知投递
+
+**OpenClaw 2026.9.7+ 本地源码部署兼容性**
+
+Python 虚拟环境、计划数据与 OpenClaw 加载包必须分开。不要将含 `.venv/`、`data/` 的项目根目录直接加入 `plugins.load.paths`；新版加载器会拒绝包内指向系统 Python 的软链接。
+
+```bash
+python3 scripts/build_openclaw_runtime.py
+```
+
+此命令输出 `dist/openclaw-runtime/<内容哈希>/`，只含 JS 入口、插件清单、技能说明、安装文档和许可证，不含 Python 环境、数据或安装钩子。通过 `openclaw config set plugins.load.paths ... --strict-json` 将旧的项目根路径替换为该输出目录，保留其他插件路径。用 `openclaw plan-tracker-deliver --help` 验证命令加载，再恢复发送服务。源码更新后重新构建并切换到新目录；已有目录保持不变，便于回滚。
+
+MCP、daemon、webhook receiver 继续使用原项目和原数据目录。不要对生成的轻量目录执行 `scripts/setup.sh`；Python 环境的安装仍在项目根目录执行。构建本身不修改 OpenClaw 配置、不发送通知。
 
 **方式一：Webhook 实时推送（推荐）**
 

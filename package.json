@@ -1,6 +1,6 @@
 {
   "name": "plan-tracker",
-  "version": "2.14.0",
+  "version": "2.14.1",
   "description": "MCP server for long-term plan tracking — milestones, daily check-ins, webhook push notifications, event-scheduled reminders, and AI-assisted progress analysis. OpenClaw plugin.",
   "main": "src/index.js",
   "keywords": ["openclaw", "plugin", "mcp", "plan", "tracker", "reminder", "productivity"],
@@ -39,6 +39,7 @@
     }
   },
   "scripts": {
+    "build:openclaw": "python3 scripts/build_openclaw_runtime.py",
     "postinstall": "bash scripts/setup.sh"
   }
 }
