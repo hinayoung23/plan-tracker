@@ -1,414 +1,167 @@
-# Plan Tracker MCP
-
-### 2.14.2 · Evening review deadlines
-
-The daemon schedules each timeout from the recorded evening reminder timestamp
-and restores pending timeouts after startup or a schedule reload. Timeout
-notifications include the review date. Startup catch-up lists all newly marked
-dates for a plan in one notification.
-
-### 2.14.1: isolated OpenClaw runtime
-
-OpenClaw 2026.9.7 rejects plugin packages containing Python virtual-environment
-symlinks that point outside the package. This release builds an immutable,
-content-addressed runtime containing only JavaScript, plugin metadata, skills,
-documentation and the license. Python services and private data stay outside it.
-
-ClawHub and the plugin archive now ship this lightweight runtime without install
-hooks. Install the Python wheel separately as shown below; existing deployments
-can keep their Python environment and data. Building or upgrading the runtime
-does not clear notification queues or resend past reminders.
-
-### 2.14.0: bounded notification delivery
-
-Notification CLI attempts now have a 90-second total budget, including startup
-and the 15-second gateway send timeout. Each attempt owns a separate process
-group and private temporary directory; success, failure and timeout all reclaim
-remaining child processes and scratch copies. Delivery pauses below 1 GiB of
-free temporary disk space.
-
-A transport failure stops the current batch without acknowledging unsent items.
-Retries wait 30, 60, 120, 240, 480 and 600 seconds, then probe at most once per
-hour until recovery. Incoming webhooks cannot shorten failure backoff. Successful
-delivery resets the failure delay. Plugin command activation is declared in the
-manifest, and CLI errors return control to the host for cleanup.
-
-[English](#english) | [中文](#chinese)
-
----
-
-<a id="english"></a>
-## English
-
-### Overview
-
-**Plan Tracker** is an MCP (Model Context Protocol) server that gives AI assistants long-term plan management capabilities. It supports milestone tracking, progress check-ins, plan analysis, and scheduled reminders with **real-time webhook push delivery**.
-
-Whether it's a learning roadmap, project plan, fitness goal, or reading list, Plan Tracker helps break big goals into executable milestones and continuously tracks progress.
-
-### Features
-
-- **Plan CRUD** — Create, view, update, delete plans with categories (learning/project/fitness/reading/custom)
-- **Milestones** — Add and update milestones, view current and upcoming ones
-- **Check-ins** — Record progress percentage, time spent, notes, blockers, and morale for each milestone
-- **Analysis** — Progress deviation, pace ratio, remaining effort estimates, morale trends
-- **Daily Reminders** — Morning check-in (default 08:30) + evening review (default 21:30) with 10-min auto-timeout
-- **Milestone Reminders** — Event-scheduled engine fires reminders at exact configured times, with startup catch-up for missed reminders
-- **Persistent Daemon** — macOS uses a launchd `KeepAlive` service so reminder delivery never inherits an AI/MCP sandbox; other platforms retain the MCP watchdog fallback
-- **Notification delivery** — Webhook real-time push + queue fallback; each notification is sent and acknowledged independently; supports QQ/Telegram/Slack etc.
-
-### Requirements
-
-- Python >= 3.12
-- MCP >= 1.0.0
-
-### Installation
-
-#### Option 1: OpenClaw Plugin Marketplace (recommended)
-
-```bash
-openclaw plugins install clawhub:plan-tracker
-python3 -m venv "$HOME/.local/share/plan-tracker/venv"
-"$HOME/.local/share/plan-tracker/venv/bin/python" -m pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2/plan_tracker-2.14.2-py3-none-any.whl
-"$HOME/.local/share/plan-tracker/venv/bin/python" -m plan_tracker.cli setup
-```
-
-The marketplace package has no `scripts/setup.sh` or automatic Python install.
-Existing installations should keep their configured Python environment and data
-directory, and upgrade the wheel there. Activate that environment before running
-the Python commands below. Both the plugin and Python service are needed for
-notification delivery.
-
-#### Option 2: pip
-
-```bash
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2/plan_tracker-2.14.2-py3-none-any.whl
-```
-
-### Setup
-
-```bash
-# One command to register MCP server + install/start the daemon service
-python -m plan_tracker.cli setup
-```
-
-`setup` automates:
-1. ✅ Registers the MCP server in `~/.openclaw/openclaw.json` (auto-detects Python path)
-2. ✅ Installs and starts a persistent launchd daemon on macOS (MCP watchdog fallback on other platforms)
-
-> Notification delivery: webhook real-time push is recommended (`webhook-setup`), with queue polling as fallback.
-
-Restart OpenClaw afterwards:
-```bash
-openclaw gateway restart
-```
-
-### Notification Delivery
-
-**Option 1: Webhook real-time push (recommended)**
-
-```bash
-# Auto-detect channel and install
-python -m plan_tracker.cli webhook-setup
-
-# Or read it from a private file (must be chmod 600)
-python -m plan_tracker.cli webhook-setup --delivery-config /path/to/private-delivery.json
-```
-
-The private JSON file uses
-`{"channel":"qqbot","to":"qqbot:c2c:<id>","agentId":"main"}`.
-`agentId` is optional and defaults to `main`; set it when notifications should
-be owned by another agent in a multi-agent OpenClaw setup.
-Edit it with a local editor or secret manager; the target is never accepted as
-a command-line value. The daemon POSTs notifications to a local webhook
-receiver, which delivers them through the privacy-safe
-`openclaw plan-tracker-deliver` stdin command. Notifications are also written
-to the queue as fallback.
-
-**Option 2: Queue polling**
-
-```bash
-python -m plan_tracker.cli deliver
-```
-
-Atomically fetches and acks pending notifications.
-
-### Available Tools
-
-| Category | Tool | Description |
-|----------|------|-------------|
-| Plan | `plan_create` / `plan_get` / `plan_list` / `plan_update` / `plan_delete` | Plan CRUD |
-| Plan | `plan_analysis` | Progress statistics and trends |
-| Milestone | `milestone_add` / `milestone_update` / `milestone_current` / `milestone_upcoming` | Milestone management |
-| Check-in | `checkin_add` | Record a progress check-in |
-| Daily | `daily_confirm` / `daily_status` | Daily plan confirmation |
-| Reminder | `reminder_configure` / `reminder_toggle` / `reminder_check_now` | Reminder config |
-| Notification | `webhook_configure` / `email_configure` | Delivery channel setup |
-
-### Project Structure
-
-```
-plan-tracker/
-├── plan_tracker/
-│   ├── server.py              # FastMCP server (20 tools)
-│   ├── daemon.py              # Standalone daemon (double-fork)
-│   ├── reminder.py            # Scheduled reminder engine
-│   ├── plan_manager.py        # Plan CRUD + analysis
-│   ├── milestone_manager.py   # Milestone + check-in logic
-│   ├── daily_tracker.py       # Daily state (reminders/timeout/archive)
-│   ├── storage.py             # JSON file storage
-│   ├── notification_queue.py  # Notification producer-consumer queue
-│   ├── cli.py                 # CLI (setup, webhook, deliver, cron)
-│   └── notification/          # Delivery channels
-│       ├── webhook_channel.py # Webhook push (real-time)
-│       ├── email_channel.py   # Email via HMAC-SHA256
-│       └── mcp_channel.py     # MCP protocol (queue)
-├── scripts/
-│   ├── webhook_receiver.py    # HTTP server for webhook delivery
-│   └── setup.sh               # One-command install
-├── skill/SKILL.md             # AI skill definition
-└── data/                      # Runtime data (gitignored)
-```
-
-### License
-
-MIT
-
----
+# Plan Tracker
 
 <a id="chinese"></a>
-## 中文
 
-### 简介
+Plan Tracker 是一个长期计划管理 MCP 服务，也可作为 OpenClaw 插件使用。你可以在对话中创建学习、项目或健身计划，将目标拆成里程碑，记录投入时间和进度，并在常用聊天渠道接收提醒。
 
-**Plan Tracker** 是一个 MCP (Model Context Protocol) 服务器，为 AI 助手提供长期计划管理能力。支持里程碑追踪、进度打卡、计划分析和定时提醒。
+[安装](#install) · [快速上手](#quick-start) · [通知与提醒](#notifications) · [运行架构](#architecture) · [工具与开发](#reference) · [English](#english) · [版本发布](https://github.com/hinayoung23/plan-tracker/releases)
 
-无论是学习路线、项目规划、健身计划还是读书清单，Plan Tracker 都能帮你把大目标拆解成可执行的里程碑，并持续追踪进度。
+<a id="install"></a>
 
-### 功能
+## 安装
 
-- **计划管理** — 创建、查看、更新、删除计划，支持分类（学习/项目/健身/阅读/自定义）
-- **里程碑管理** — 添加/更新里程碑，查看当前和即将到期的里程碑
-- **进度打卡** — 记录每个里程碑的完成百分比、投入时间、心得体会、阻碍和心情
-- **计划分析** — 计算进度偏差、节奏系数、剩余工时预估、心情趋势
-- **定时提醒** — 基于事件调度，按时触发每日早晚提醒、过期/即将到期/停滞的里程碑检测
-- **每日提醒** — 早晚两次提醒：早晨进度提醒（默认 08:30）+ 晚间完成确认（默认 21:30），支持 10 分钟超时自动判定
-- **持久守护进程** — macOS 使用 launchd `KeepAlive`，避免继承 AI/MCP 运行环境的网络沙箱；其他平台保留 MCP watchdog 兜底
-- **通知投递** — Webhook 实时推送 + 通知队列兜底，每条通知独立发送、独立确认，支持 QQ/Telegram/Slack 等平台
+需要 **Python 3.12 或更新版本**。安装 Python 服务时会一并安装 MCP 依赖。使用 OpenClaw 时，请先完成 OpenClaw 的初始化。以下命令适用于 Bash 或 Zsh。[OpenClaw 入门](https://docs.openclaw.ai/start/getting-started)
 
-### 环境要求
-
-- Python >= 3.12
-- MCP >= 1.0.0
-
-### 安装
-
-#### 方式一：OpenClaw 插件市场（推荐）
+下面以 v2.14.2 为例，从同一个 GitHub Release 安装 OpenClaw 插件和 Python 服务。
 
 ```bash
-# 安装轻量 OpenClaw 插件
-openclaw plugins install clawhub:plan-tracker
+release_url=https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2
+curl -fLO "$release_url/plan-tracker-2.14.2.tgz"
+openclaw plugins install ./plan-tracker-2.14.2.tgz
 
-# 将 Python 服务安装到插件目录以外
 python3 -m venv "$HOME/.local/share/plan-tracker/venv"
-"$HOME/.local/share/plan-tracker/venv/bin/python" -m pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2/plan_tracker-2.14.2-py3-none-any.whl
-"$HOME/.local/share/plan-tracker/venv/bin/python" -m plan_tracker.cli setup
+source "$HOME/.local/share/plan-tracker/venv/bin/activate"
+python -m pip install "$release_url/plan_tracker-2.14.2-py3-none-any.whl"
 ```
 
-市场包不再包含 `scripts/setup.sh`，也不会自动创建 Python 虚拟环境。已有部署应保留原 Python 环境和数据目录，在原环境升级 wheel，避免重复配置服务。执行下方 Python 命令前先激活所选环境。通知投递需要同时安装插件和 Python 服务。
+OpenClaw 插件提供技能和通知投递命令。计划工具、数据存储和提醒调度由 Python 服务提供。也可以从 ClawHub 安装其已发布的插件版本，命令是 `openclaw plugins install clawhub:plan-tracker`。[OpenClaw 插件安装指南](https://docs.openclaw.ai/cli/plugins/install)
 
-#### 方式二：PyPI / pip
+其他 MCP 客户端可以直接安装 Python wheel，将虚拟环境中的 Python 设为 stdio 命令，参数数组为 `["-m", "plan_tracker.server"]`。
+
+<a id="quick-start"></a>
+
+## 快速上手
+
+在上一步激活的 Python 环境中运行以下命令。`setup` 将 MCP 服务注册到 `~/.openclaw/openclaw.json`，并启动提醒 daemon。
 
 ```bash
-# 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2/plan_tracker-2.14.2-py3-none-any.whl
+python -m plan_tracker.cli setup
+openclaw gateway restart
+python -m plan_tracker.cli daemon status
+```
 
-# 或从源码安装
+可以先用 `python -m plan_tracker.cli setup --dry-run` 预览配置。注册完成后，可以在 OpenClaw 对话中提出这些请求。
+
+- 「帮我创建一个 8 周的 Rust 学习计划，每周投入 5 小时，拆成 4 个里程碑。」
+- 「打卡。第一个里程碑完成了 40%，今天学了 2 小时。」
+- 「查看计划进展和下一个到期的里程碑，告诉我现在是否落后。」
+
+也可以用 `python -m plan_tracker.cli plan list` 查看计划列表。需要将提醒送到聊天渠道时，继续配置 [Webhook 推送](#notifications)。
+
+<a id="notifications"></a>
+
+## 通知与提醒
+
+### Webhook 推送到 OpenClaw
+
+macOS 可以用 `webhook-setup` 安装并启动本地接收器。先确保 OpenClaw 已配置可用的聊天渠道，再在本机创建 `delivery.json`。以下是 QQ 私聊示例，将 `<id>` 替换为你的接收目标。`agentId` 默认是 `main`，可按需指定其他 Agent。
+
+```json
+{
+  "channel": "qqbot",
+  "to": "qqbot:c2c:<id>",
+  "agentId": "main"
+}
+```
+
+```bash
+chmod 600 delivery.json
+python -m plan_tracker.cli webhook-setup --delivery-config ./delivery.json
+openclaw plan-tracker-deliver --help
+```
+
+接收配置保存在数据目录的 `webhook_delivery.json` 中。再次运行 `webhook-setup` 时可以复用已保存的配置。默认接收地址是 `http://127.0.0.1:9876`，用 `--port` 改端口时，也要用 `webhook_configure` 更新计划中的地址。
+
+### 队列与邮件
+
+自定义投递程序可以通过 MCP 的 `notification_fetch` 和 `notification_ack` 消费队列。使用 CLI 时先拉取通知，实际发送成功后再用对应的 ID 确认。
+
+```bash
+python -m plan_tracker.cli notification fetch
+python -m plan_tracker.cli notification ack NOTIFICATION_ID
+```
+
+`deliver --no-ack` 可预览文本，`deliver` 默认会在打印后确认队列记录。仍使用 `~/.openclaw/cron/jobs.json` 的旧版 OpenClaw 部署可通过 `cron-setup --help` 查看轮询配置。邮件投递由 `email_configure` 配置，需要启用 `email` 通道和对应的邮件 API 凭据。
+
+### 提醒规则
+
+| 提醒 | 默认行为 |
+| --- | --- |
+| 早晨进度提醒 | 本地时间 08:30，提示当前里程碑 |
+| 晚间完成确认 | 本地时间 21:30，从 daemon 记录提醒时起默认有 10 分钟确认时间 |
+| 里程碑提醒 | 检查逾期、临近到期和进度停滞的里程碑，默认提前 3 天提示 |
+| 每周回顾 | 默认周一 09:00 汇总计划进度 |
+
+晚间确认支持「完成」「部分完成」「未完成」。在确认窗口内通过对话记录里程碑进度，也会自动确认当天的晚间提醒。超时未确认会自动标记为未完成，超时后的手动补确认会归档到次日记录。
+
+daemon 启动时会补检最近 7 天内已发出晚间提醒、已超时且尚未确认的记录。自 v2.14.2 起，超时通知注明对应日期，同一计划的多条补检结果会汇成一条。
+
+配置其他时间时，将下例中的 `rust-learning` 换成你的计划标识。
+
+```bash
+python -m plan_tracker.cli reminder configure --plan rust-learning \
+  --daily-checkin-time 08:30 --daily-review-time 21:30 \
+  --confirmation-timeout-minutes 10
+```
+
+<a id="architecture"></a>
+
+## 运行架构
+
+| 组件 | 职责 |
+| --- | --- |
+| MCP 服务 | 提供计划、里程碑、打卡、分析和提醒配置工具 |
+| 提醒 daemon | 独立调度提醒，记录每日确认状态并写入通知队列 |
+| Webhook 接收器 | 读取待投递通知，调用 `openclaw plan-tracker-deliver` 经 Gateway 发送，成功后逐条确认 |
+| 本地数据 | 保存计划、打卡、每日状态、通知队列和日志 |
+
+在 macOS 上，daemon 由 `com.plan-tracker.daemon` LaunchAgent 托管。其他平台可以手动启动 daemon，MCP 服务运行时也会检查并尝试拉起它。使用 `python -m plan_tracker.cli daemon --help` 查看启动、停止和状态命令。
+
+源码部署默认使用项目的 `data/` 目录，wheel 安装默认使用 `~/mcp-servers/plan-tracker/data/`。可用 `PLAN_TRACKER_DATA_DIR` 指定其他目录，MCP 服务、daemon、接收器和 CLI 应使用同一路径。排查提醒生成和实际投递时，分别查看该目录的 `daemon.log` 和 `webhook-stderr.log`。
+
+升级已有部署时，请在当前 Python 环境安装新 wheel，保留原数据目录。重启提醒 daemon 后，调度修复才会生效。macOS 可在原环境重新运行 `python -m plan_tracker.cli setup` 来加载新版 daemon。
+
+<a id="reference"></a>
+
+## 工具与开发
+
+| 用途 | MCP 工具 |
+| --- | --- |
+| 管理计划和查看进度 | `plan_create`、`plan_get`、`plan_list`、`plan_update`、`plan_delete`、`plan_analysis` |
+| 安排里程碑和打卡 | `milestone_add`、`milestone_update`、`milestone_current`、`milestone_upcoming`、`checkin_add` |
+| 查看或确认当天完成情况 | `daily_status`、`daily_confirm` |
+| 设置提醒与通知渠道 | `reminder_configure`、`reminder_toggle`、`reminder_check_now`、`webhook_configure`、`email_configure` |
+| 消费通知队列 | `notification_fetch`、`notification_ack` |
+
+计划包含目标、截止日期和周投入目标。里程碑记录状态、进度和预估工时，打卡记录进度、投入、笔记、阻碍和心情。完整字段和对话流程见 [Plan Tracker 技能文档](skill/SKILL.md)。
+
+### 从源码运行
+
+```bash
 git clone https://github.com/hinayoung23/plan-tracker.git
 cd plan-tracker
-pip install .
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python scripts/build_openclaw_runtime.py
 ```
 
-### 初始化配置
+构建命令会输出 `dist/openclaw-runtime/<内容哈希>/`。在 OpenClaw 的 `plugins.load.paths` 中添加该目录，保留已有的其他插件路径。若之前直接加载项目根目录，用构建目录替换对应路径。轻量目录包含 JS 入口、技能、清单、文档和许可证。Python 环境和数据保存在独立路径。
 
-安装后运行 `setup` 完成 MCP 注册和守护进程启动：
+在 macOS 安装 Node.js 后，可运行 `./check.sh` 完成发布前检查。问题和建议可提交到 [GitHub Issues](https://github.com/hinayoung23/plan-tracker/issues)。
 
-```bash
-# 一条命令完成配置
-python -m plan_tracker.cli setup
+<a id="english"></a>
 
-# 试运行：预览改动但不写入
-python -m plan_tracker.cli setup --dry-run
-```
+## English quick start
 
-`setup` 自动完成：
-1. ✅ 在 `~/.openclaw/openclaw.json` 中注册 MCP Server（自动检测 Python 路径）
-2. ✅ macOS 安装并启动 launchd 持久守护服务（其他平台由 MCP watchdog 自动拉起）
+Plan Tracker is an MCP server and an OpenClaw plugin for long-term plans, milestones, progress check-ins, and scheduled reminders. Install the plugin archive and Python wheel from the same [GitHub Release](https://github.com/hinayoung23/plan-tracker/releases) with Python 3.12+.
 
-> 通知投递推荐使用 Webhook 实时推送（`webhook-setup`），也支持队列轮询（`deliver` + cron）。
+1. Follow the [installation commands](#install), then run `python -m plan_tracker.cli setup` and `openclaw gateway restart`.
+2. Ask OpenClaw to create a plan with milestones, log progress, or review upcoming deadlines.
+3. For chat notifications on macOS, follow the [Webhook setup](#notifications). Store the channel and recipient in a private JSON file and pass it via `--delivery-config`.
 
-安装后重启 OpenClaw 生效：
-```bash
-openclaw gateway restart
-```
+See the [skill documentation](skill/SKILL.md) for tools and workflows, and the [release notes](https://github.com/hinayoung23/plan-tracker/releases) for changes.
 
-### 可用工具
+## 许可证
 
-#### 计划 (Plan)
-| 工具 | 说明 |
-|------|------|
-| `plan_create` | 创建新计划 |
-| `plan_get` | 查看计划详情 |
-| `plan_list` | 列出所有计划 |
-| `plan_update` | 更新计划字段 |
-| `plan_delete` | 删除计划 |
-| `plan_analysis` | 获取计划分析数据 |
-
-#### 里程碑 (Milestone)
-| 工具 | 说明 |
-|------|------|
-| `milestone_add` | 添加里程碑 |
-| `milestone_update` | 更新里程碑 |
-| `milestone_current` | 查看当前活跃里程碑 |
-| `milestone_upcoming` | 查看即将到期的里程碑 |
-
-#### 打卡 (Check-in)
-| 工具 | 说明 |
-|------|------|
-| `checkin_add` | 记录一次进度打卡 |
-
-#### 每日确认 (Daily)
-| 工具 | 说明 |
-|------|------|
-| `daily_confirm` | 确认当天计划完成情况 |
-| `daily_status` | 查看当天提醒和确认状态 |
-
-#### 提醒 (Reminder)
-| 工具 | 说明 |
-|------|------|
-| `reminder_configure` | 配置提醒参数（含每日提醒时间） |
-| `reminder_toggle` | 开启/关闭提醒 |
-| `reminder_check_now` | 手动触发一次检查 |
-| `webhook_configure` | 配置 Webhook 实时推送 |
-| `email_configure` | 配置邮件通知（HMAC-SHA256 签名） |
-
-### 数据模型
-
-```
-Plan
-├── name            (kebab-case, 唯一标识)
-├── title           (可读标题)
-├── goal            (1-2 句目标描述)
-├── category        (learning | project | fitness | reading | custom)
-├── target_end_date (YYYY-MM-DD)
-├── weekly_hours_target
-├── milestones      [Milestone, ...]
-└── reminders       ReminderConfig
-
-Milestone
-├── id, title, description
-├── status          (pending | in_progress | completed | blocked)
-├── target_date     (YYYY-MM-DD)
-├── completion_pct  (0-100)
-├── effort_hours_estimate / effort_hours_actual
-└── checkins        [Checkin, ...]
-
-Checkin
-├── date, progress_pct, hours_spent
-├── notes, blockers
-└── morale          (struggling | neutral | good | great)
-```
-
-### 部署
-
-Plan Tracker 的提醒功能通过**独立守护进程**运行，支持自动拉起，无需手动管理：
-
-#### 持久化与自动拉起
-
-在 macOS 上，`setup` 会安装 `com.plan-tracker.daemon` LaunchAgent，并由 launchd `KeepAlive` 托管。这样 daemon 不会继承 OpenClaw、Codex 等宿主的网络沙箱。其他平台由 `server.py` 的 watchdog 每 5 分钟检测并自动拉起。
-
-#### 手动管理
-
-```bash
-python -m plan_tracker.cli daemon start
-python -m plan_tracker.cli daemon status
-python -m plan_tracker.cli daemon stop
-```
-
-#### 通知投递
-
-**OpenClaw 2026.9.7+ 本地源码部署兼容性**
-
-Python 虚拟环境、计划数据与 OpenClaw 加载包必须分开。不要将含 `.venv/`、`data/` 的项目根目录直接加入 `plugins.load.paths`；新版加载器会拒绝包内指向系统 Python 的软链接。
-
-```bash
-python3 scripts/build_openclaw_runtime.py
-```
-
-此命令输出 `dist/openclaw-runtime/<内容哈希>/`，只含 JS 入口、插件清单、技能说明、安装文档和许可证，不含 Python 环境、数据或安装钩子。通过 `openclaw config set plugins.load.paths ... --strict-json` 将旧的项目根路径替换为该输出目录，保留其他插件路径。用 `openclaw plan-tracker-deliver --help` 验证命令加载，再恢复发送服务。源码更新后重新构建并切换到新目录；已有目录保持不变，便于回滚。
-
-MCP、daemon、webhook receiver 继续使用原项目和原数据目录。不要对生成的轻量目录执行 `scripts/setup.sh`；Python 环境的安装仍在项目根目录执行。构建本身不修改 OpenClaw 配置、不发送通知。
-
-**方式一：Webhook 实时推送（推荐）**
-
-```bash
-# 一键安装 webhook receiver，自动发现投递渠道
-python -m plan_tracker.cli webhook-setup
-
-# 从私密文件读取（文件权限必须为 0600）
-python -m plan_tracker.cli webhook-setup --delivery-config /path/to/private-delivery.json
-```
-
-私密 JSON 格式为 `{"channel":"qqbot","to":"qqbot:c2c:<id>","agentId":"main"}`。`agentId` 可省略，默认使用 `main`；多 Agent 环境需要投递到其他 Agent 时请显式设置。请通过本地编辑器或密钥管理器创建，接收目标不再接受命令行传值。Daemon 生成通知后通过 Webhook POST 到本地 receiver，receiver 通过 stdin 调用 `openclaw plan-tracker-deliver` 实时推送到消息平台。通知同时写入队列作为兜底。
-
-**方式二：队列轮询**
-
-```bash
-python -m plan_tracker.cli deliver
-```
-
-### 提醒机制
-
-#### 每日提醒
-- **早晨进度提醒**（默认 08:30）— 提醒当天的计划安排和当前里程碑
-- **晚间完成确认**（默认 21:30）— 确认当天计划完成情况（已完成/部分完成/未完成）
-- **10 分钟超时** — 晚间确认发出后 10 分钟内未回复，自动标记为未完成
-- **补确认归档** — 超时后的补确认将归档到第二天的计划记录中
-
-#### 里程碑提醒
-- 基于事件调度，每天在早晨提醒时间触发一次里程碑检查
-- 过期里程碑（超过目标日期未完成）→ 推送提醒
-- 即将到期（before_due_days 内）→ 推送提醒
-- 停滞里程碑（7 天未更新进度）→ 推送提醒
-- 每周检查（指定星期几）→ 推送周进度回顾
-- 同类型通知 12 小时内不重复推送
-- Daemon 启动时自动补检遗漏的提醒
-
-### 项目结构
-
-```
-plan-tracker/
-├── plan_tracker/
-│   ├── server.py              # FastMCP 工具服务入口
-│   ├── daemon.py              # 独立守护进程（提醒引擎常驻运行）
-│   ├── reminder.py            # 事件调度提醒引擎
-│   ├── plan_manager.py        # Plan CRUD + 分析
-│   ├── milestone_manager.py   # 里程碑 + 打卡操作
-│   ├── daily_tracker.py       # 每日状态管理（提醒/确认/超时/归档）
-│   ├── storage.py             # JSON 文件存储
-│   ├── notification_queue.py  # 通知队列（daemon 写，外部系统读）
-│   ├── cli.py                 # 命令行管理工具
-│   └── notification/          # 通知通道
-│       ├── webhook_channel.py # Webhook 实时推送
-│       ├── email_channel.py   # 邮件通知（HMAC-SHA256）
-│       └── mcp_channel.py     # MCP 通道通知
-├── scripts/
-│   ├── webhook_receiver.py    # Webhook 接收端 HTTP 服务
-│   └── setup.sh               # 一键安装脚本
-├── skill/SKILL.md             # AI Skill 定义
-└── data/                      # 运行时数据（gitignore）
-```
-
-### License
-
-MIT
+[MIT](LICENSE)
