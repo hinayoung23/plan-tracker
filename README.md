@@ -11,39 +11,52 @@ Plan Tracker 是一个长期计划管理 MCP 服务，也可作为 OpenClaw 插�
 
 <a id="install"></a>
 
-## 安装
+## 安装 OpenClaw 插件
 
-需要 **Python 3.12 或更新版本**。安装 Python 服务时会一并安装 MCP 依赖。使用 OpenClaw 时，请先完成 OpenClaw 的初始化。以下命令适用于 Bash 或 Zsh。[OpenClaw 入门](https://docs.openclaw.ai/start/getting-started)
+先完成 OpenClaw 的初始化，再任选以下一种方式安装插件。[OpenClaw 入门](https://docs.openclaw.ai/start/getting-started)
 
-下面以 v2.14.2 为例，从同一个 GitHub Release 安装 OpenClaw 插件和 Python 服务。
+### 从 GitHub 下载
 
 ```bash
 release_url=https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2
 curl -fLO "$release_url/plan-tracker-2.14.2.tgz"
 openclaw plugins install ./plan-tracker-2.14.2.tgz
-
-python3 -m venv "$HOME/.local/share/plan-tracker/venv"
-source "$HOME/.local/share/plan-tracker/venv/bin/activate"
-python -m pip install "$release_url/plan_tracker-2.14.2-py3-none-any.whl"
 ```
 
-OpenClaw 插件提供技能和通知投递命令。计划工具、数据存储和提醒调度由 Python 服务提供。也可以从 ClawHub 安装其已发布的插件版本，命令是 `openclaw plugins install clawhub:plan-tracker`。[OpenClaw 插件安装指南](https://docs.openclaw.ai/cli/plugins/install)
+### 从 ClawHub 安装
 
-其他 MCP 客户端可以直接安装 Python wheel，将虚拟环境中的 Python 设为 stdio 命令，参数数组为 `["-m", "plan_tracker.server"]`。
+```bash
+openclaw plugins install clawhub:plan-tracker
+```
 
 <a id="quick-start"></a>
 
 ## 快速上手
 
-在上一步激活的 Python 环境中运行以下命令。`setup` 将 MCP 服务注册到 `~/.openclaw/openclaw.json`，并启动提醒 daemon。
+### 初始化 Python 服务
+
+插件提供技能和通知投递命令。两种插件安装方式共用独立的 Python 服务，由它提供计划工具、数据存储和提醒调度。需要 **Python 3.12 或更新版本**，以下命令适用于 Bash 或 Zsh。
+
+从 GitHub Releases 下载对应版本的服务源码包，解压到长期保留的位置。配置脚本会准备依赖、注册 MCP 服务并启动提醒 daemon。下面以 v2.14.2 为例。
 
 ```bash
-python -m plan_tracker.cli setup
+release_url=https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2
+curl -fLO "$release_url/plan_tracker-2.14.2.tar.gz"
+tar -xzf plan_tracker-2.14.2.tar.gz
+cd plan_tracker-2.14.2
+python3 -m venv .venv
+bash scripts/setup.sh
+source .venv/bin/activate
+
 openclaw gateway restart
 python -m plan_tracker.cli daemon status
 ```
 
-可以先用 `python -m plan_tracker.cli setup --dry-run` 预览配置。注册完成后，可以在 OpenClaw 对话中提出这些请求。
+其他 MCP 客户端可将该虚拟环境中的 Python 设为 stdio 命令，参数数组为 `["-m", "plan_tracker.server"]`。
+
+### 在对话中使用
+
+注册完成后，可以在 OpenClaw 对话中提出这些请求。
 
 - 「帮我创建一个 8 周的 Rust 学习计划，每周投入 5 小时，拆成 4 个里程碑。」
 - 「打卡。第一个里程碑完成了 40%，今天学了 2 小时。」
@@ -120,9 +133,9 @@ python -m plan_tracker.cli reminder configure --plan rust-learning \
 
 在 macOS 上，daemon 由 `com.plan-tracker.daemon` LaunchAgent 托管。其他平台可以手动启动 daemon，MCP 服务运行时也会检查并尝试拉起它。使用 `python -m plan_tracker.cli daemon --help` 查看启动、停止和状态命令。
 
-源码部署默认使用项目的 `data/` 目录，wheel 安装默认使用 `~/mcp-servers/plan-tracker/data/`。可用 `PLAN_TRACKER_DATA_DIR` 指定其他目录，MCP 服务、daemon、接收器和 CLI 应使用同一路径。排查提醒生成和实际投递时，分别查看该目录的 `daemon.log` 和 `webhook-stderr.log`。
+按上述步骤配置时，默认使用解压目录中的 `data/`。可用 `PLAN_TRACKER_DATA_DIR` 指定其他目录，MCP 服务、daemon、接收器和 CLI 应使用同一路径。排查提醒生成和实际投递时，分别查看该目录的 `daemon.log` 和 `webhook-stderr.log`。
 
-升级已有部署时，请在当前 Python 环境安装新 wheel，保留原数据目录。重启提醒 daemon 后，调度修复才会生效。macOS 可在原环境重新运行 `python -m plan_tracker.cli setup` 来加载新版 daemon。
+升级 Python 服务时，在运行新版的 `scripts/setup.sh` 前，将 `PLAN_TRACKER_DATA_DIR` 指向现有数据目录。若同时使用 Webhook 推送，用新 Python 环境重新运行 `webhook-setup`，可复用原目录中的接收配置。
 
 <a id="reference"></a>
 
@@ -138,20 +151,17 @@ python -m plan_tracker.cli reminder configure --plan rust-learning \
 
 计划包含目标、截止日期和周投入目标。里程碑记录状态、进度和预估工时，打卡记录进度、投入、笔记、阻碍和心情。完整字段和对话流程见 [Plan Tracker 技能文档](skill/SKILL.md)。
 
-### 从源码运行
+### 本地构建
 
 ```bash
 git clone https://github.com/hinayoung23/plan-tracker.git
 cd plan-tracker
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-python scripts/build_openclaw_runtime.py
+python3 scripts/build_openclaw_runtime.py
 ```
 
-构建命令会输出 `dist/openclaw-runtime/<内容哈希>/`。在 OpenClaw 的 `plugins.load.paths` 中添加该目录，保留已有的其他插件路径。若之前直接加载项目根目录，用构建目录替换对应路径。轻量目录包含 JS 入口、技能、清单、文档和许可证。Python 环境和数据保存在独立路径。
+构建命令会将 JS 入口、技能、清单、文档和许可证输出到 `dist/openclaw-runtime/<内容哈希>/`。
 
-在 macOS 安装 Node.js 后，可运行 `./check.sh` 完成发布前检查。问题和建议可提交到 [GitHub Issues](https://github.com/hinayoung23/plan-tracker/issues)。
+在 macOS 上，准备好 Python 服务环境并安装 Node.js 后，可运行 `./check.sh` 完成发布前检查。问题和建议可提交到 [GitHub Issues](https://github.com/hinayoung23/plan-tracker/issues)。
 
 ## 许可证
 

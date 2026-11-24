@@ -8,37 +8,50 @@ Plan Tracker is an MCP server and OpenClaw plugin for managing long-term plans. 
 
 <a id="install"></a>
 
-## Installation
+## Install the OpenClaw plugin
 
-Plan Tracker requires **Python 3.12 or later**. Installing the Python service also installs its MCP dependency. If you use OpenClaw, complete its initial setup first. The commands below work in Bash and Zsh. [OpenClaw getting started guide](https://docs.openclaw.ai/start/getting-started)
+Complete OpenClaw's initial setup, then choose one of the following two ways to install the plugin. [OpenClaw getting started guide](https://docs.openclaw.ai/start/getting-started)
 
-Install the plugin archive and Python wheel from the same GitHub Release. This example uses v2.14.2.
+### Download from GitHub
 
 ```bash
 release_url=https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2
 curl -fLO "$release_url/plan-tracker-2.14.2.tgz"
 openclaw plugins install ./plan-tracker-2.14.2.tgz
-
-python3 -m venv "$HOME/.local/share/plan-tracker/venv"
-source "$HOME/.local/share/plan-tracker/venv/bin/activate"
-python -m pip install "$release_url/plan_tracker-2.14.2-py3-none-any.whl"
 ```
 
-The OpenClaw plugin supplies the skill and the notification delivery command. The Python service supplies the planning tools, stores data, and schedules reminders. If you use a version published on ClawHub, install the plugin with `openclaw plugins install clawhub:plan-tracker`. [OpenClaw plugin installation guide](https://docs.openclaw.ai/cli/plugins/install)
+### Install from ClawHub
 
-For another MCP client, install the Python wheel and register the virtual environment's Python executable as a stdio server with the arguments `["-m", "plan_tracker.server"]`.
+```bash
+openclaw plugins install clawhub:plan-tracker
+```
 
 ## Quick start
 
-Run these commands from the Python environment you just activated. The `setup` command registers the MCP server in `~/.openclaw/openclaw.json` and starts the reminder daemon.
+### Set up the Python service
+
+The plugin supplies the skill and the notification delivery command. Both plugin installation methods use the same separate Python service for planning tools, data storage, and reminder scheduling. You need **Python 3.12 or later**. The commands below work in Bash and Zsh.
+
+Download the matching service source archive from GitHub Releases and extract it where you plan to keep it. The setup script prepares the dependencies, registers the MCP server, and starts the reminder daemon. This example uses v2.14.2.
 
 ```bash
-python -m plan_tracker.cli setup
+release_url=https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2
+curl -fLO "$release_url/plan_tracker-2.14.2.tar.gz"
+tar -xzf plan_tracker-2.14.2.tar.gz
+cd plan_tracker-2.14.2
+python3 -m venv .venv
+bash scripts/setup.sh
+source .venv/bin/activate
+
 openclaw gateway restart
 python -m plan_tracker.cli daemon status
 ```
 
-To preview the configuration, run `python -m plan_tracker.cli setup --dry-run`. Once setup is complete, try these requests in OpenClaw.
+For another MCP client, register the virtual environment's Python executable as a stdio server with the arguments `["-m", "plan_tracker.server"]`.
+
+### Use Plan Tracker in chat
+
+Once setup is complete, try these requests in OpenClaw.
 
 - “Create an eight-week Rust learning plan with four milestones and a budget of five hours a week.”
 - “Log a check-in. I spent two hours studying today and finished 40% of the first milestone.”
@@ -113,9 +126,9 @@ python -m plan_tracker.cli reminder configure --plan rust-learning \
 
 On macOS, the `com.plan-tracker.daemon` LaunchAgent manages the daemon. On other platforms, you can start the daemon manually, and the MCP server also checks for it and attempts to start it when needed. See `python -m plan_tracker.cli daemon --help` for start, stop, and status commands.
 
-Source installations default to the project's `data/` directory. Wheel installations default to `~/mcp-servers/plan-tracker/data/`. Set `PLAN_TRACKER_DATA_DIR` to override this path and use the same directory for the MCP server, daemon, receiver, and CLI. For troubleshooting, check `daemon.log` for reminder generation and `webhook-stderr.log` for delivery.
+The setup above defaults to the `data/` directory in the extracted source. Set `PLAN_TRACKER_DATA_DIR` to override this path and use the same directory for the MCP server, daemon, receiver, and CLI. For troubleshooting, check `daemon.log` for reminder generation and `webhook-stderr.log` for delivery.
 
-To upgrade an existing installation, install the new wheel in the current Python environment and keep the existing data directory. Restart the reminder daemon to load scheduling fixes. On macOS, rerun `python -m plan_tracker.cli setup` from the same environment to reload the daemon.
+To upgrade the Python service, point `PLAN_TRACKER_DATA_DIR` at your existing data directory before running the new version's `scripts/setup.sh`. If you use webhook delivery, rerun `webhook-setup` from the new Python environment to reuse the delivery configuration in that directory.
 
 <a id="reference"></a>
 
@@ -131,20 +144,17 @@ To upgrade an existing installation, install the new wheel in the current Python
 
 A plan has a goal, deadline, and weekly time target. Milestones track status, progress, and estimated hours. Check-ins record progress, time spent, notes, blockers, and morale. For the full data model and conversation workflows, see the [Plan Tracker skill](skill/SKILL.md).
 
-### Run from source
+### Build locally
 
 ```bash
 git clone https://github.com/hinayoung23/plan-tracker.git
 cd plan-tracker
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-python scripts/build_openclaw_runtime.py
+python3 scripts/build_openclaw_runtime.py
 ```
 
-The build command outputs `dist/openclaw-runtime/<content-hash>/`. Add that directory to `plugins.load.paths` in OpenClaw and keep your other plugin paths. If OpenClaw previously loaded the source root, replace that entry with the generated path. The runtime directory contains the JavaScript entry point, skill, manifests, documentation, and license. The Python environment and data live separately.
+The build command writes the JavaScript entry point, skill, manifests, documentation, and license to `dist/openclaw-runtime/<content-hash>/`.
 
-On macOS with Node.js installed, run `./check.sh` for the pre-release checks. Report bugs and suggestions in [GitHub Issues](https://github.com/hinayoung23/plan-tracker/issues).
+On macOS, run `./check.sh` for the pre-release checks after setting up the Python service environment and installing Node.js. Report bugs and suggestions in [GitHub Issues](https://github.com/hinayoung23/plan-tracker/issues).
 
 ## License
 
