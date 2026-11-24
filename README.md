@@ -1,10 +1,13 @@
 # Plan Tracker
 
 <a id="chinese"></a>
+<a id="english"></a>
+
+**简体中文** · [English](https://github.com/hinayoung23/plan-tracker/blob/main/README.en.md)
 
 Plan Tracker 是一个长期计划管理 MCP 服务，也可作为 OpenClaw 插件使用。你可以在对话中创建学习、项目或健身计划，将目标拆成里程碑，记录投入时间和进度，并在常用聊天渠道接收提醒。
 
-[安装](#install) · [快速上手](#quick-start) · [通知与提醒](#notifications) · [运行架构](#architecture) · [工具与开发](#reference) · [English](#english) · [版本发布](https://github.com/hinayoung23/plan-tracker/releases)
+[安装](#install) · [快速上手](#quick-start) · [通知与提醒](#notifications) · [运行架构](#architecture) · [工具与开发](#reference) · [版本发布](https://github.com/hinayoung23/plan-tracker/releases)
 
 <a id="install"></a>
 
@@ -149,18 +152,6 @@ python scripts/build_openclaw_runtime.py
 构建命令会输出 `dist/openclaw-runtime/<内容哈希>/`。在 OpenClaw 的 `plugins.load.paths` 中添加该目录，保留已有的其他插件路径。若之前直接加载项目根目录，用构建目录替换对应路径。轻量目录包含 JS 入口、技能、清单、文档和许可证。Python 环境和数据保存在独立路径。
 
 在 macOS 安装 Node.js 后，可运行 `./check.sh` 完成发布前检查。问题和建议可提交到 [GitHub Issues](https://github.com/hinayoung23/plan-tracker/issues)。
-
-<a id="english"></a>
-
-## English quick start
-
-Plan Tracker is an MCP server and an OpenClaw plugin for long-term plans, milestones, progress check-ins, and scheduled reminders. Install the plugin archive and Python wheel from the same [GitHub Release](https://github.com/hinayoung23/plan-tracker/releases) with Python 3.12+.
-
-1. Follow the [installation commands](#install), then run `python -m plan_tracker.cli setup` and `openclaw gateway restart`.
-2. Ask OpenClaw to create a plan with milestones, log progress, or review upcoming deadlines.
-3. For chat notifications on macOS, follow the [Webhook setup](#notifications). Store the channel and recipient in a private JSON file and pass it via `--delivery-config`.
-
-See the [skill documentation](skill/SKILL.md) for tools and workflows, and the [release notes](https://github.com/hinayoung23/plan-tracker/releases) for changes.
 
 ## 许可证
 
