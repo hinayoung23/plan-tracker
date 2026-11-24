@@ -23,11 +23,14 @@ import io
 import json
 import logging
 import os
+import sched
 import sys
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 # ── helpers ──────────────────────────────────────────────────────
@@ -716,6 +719,99 @@ def test_pending_queue_gets_webhook_wakeup_retry():
     assert calls[0][2] == "__queue__", "Queue wake-up exposed a plan identifier"
 
 
+def test_review_timeout_uses_recorded_deadline_after_schedule_reload():
+    """A fractional or cross-midnight deadline survives rebuilding the schedule."""
+    from plan_tracker import daily_tracker, reminder, storage
+    from plan_tracker.plan_manager import create_plan
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz is not None else now
+
+    for review_time in ("21:30", "23:55"):
+        _setup_test_env()
+        name = "review-deadline"
+        create_plan(name, "Review Deadline", "Test", "2099-12-31")
+        storage.modify_plan(
+            name, lambda plan: plan["reminders"].update(daily_review_time=review_time),
+        )
+        review_date = "2026-11-07"
+        now = datetime.fromisoformat(f"{review_date}T{review_time}:00.199571")
+        deadline = now + timedelta(minutes=10)
+
+        with patch.object(daily_tracker, "datetime", Clock), patch.object(reminder, "datetime", Clock):
+            engine = reminder.ReminderEngine()
+            engine._scheduler = sched.scheduler(lambda: now.timestamp(), lambda _: None)
+            with patch.object(engine, "_dispatch") as dispatch:
+                engine._fire_daily_review(name)
+                events = [e for e in engine._scheduler.queue if e.action == engine._fire_review_timeout]
+                assert [(e.time, e.argument) for e in events] == [(deadline.timestamp(), (name, review_date))]
+
+                now = deadline.replace(microsecond=0)
+                engine._schedule_all_events()
+                events = [e for e in engine._scheduler.queue if e.action == engine._fire_review_timeout]
+                assert [(e.time, e.argument) for e in events] == [(deadline.timestamp(), (name, review_date))]
+
+                engine._scheduler.run(blocking=False)
+                assert dispatch.call_count == 1, "Timed out before the recorded deadline"
+                now = deadline
+                engine._scheduler.run(blocking=False)
+                note, = dispatch.call_args.args[0]
+                assert dispatch.call_count == 2 and note["type"] == "daily_timeout"
+                assert review_date in note["message"]
+                assert daily_tracker._load_state()[name][review_date]["auto_marked"]
+
+                engine._fire_review_timeout(name, review_date)
+                assert dispatch.call_count == 2, "Already marked date generated another timeout"
+
+
+def test_startup_timeout_catchup_batches_dates_and_preserves_today_timeout():
+    """Catch-up sends one dated batch and a distinct review can still expire."""
+    _setup_test_env()
+    from plan_tracker import daily_tracker, reminder
+    from plan_tracker.notification.email_channel import EmailChannel
+    from plan_tracker.plan_manager import create_plan
+
+    name = "review-catchup"
+    create_plan(name, "Review Catch-up", "Test", "2099-12-31")
+    entry = reminder._plan_index_entry(name)
+    plan = reminder.load_plan(name)
+    engine = reminder.ReminderEngine()
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz is not None else now
+
+    with patch.object(daily_tracker, "datetime", Clock), patch.object(reminder, "datetime", Clock):
+        for day in (7, 8, 12):
+            now = datetime(2026, 11, day, 21, 30, 0, 199571)
+            daily_tracker.record_review_reminded(name)
+        now = datetime(2026, 11, 12, 22, 0)
+        daily_tracker.auto_mark_incomplete(name)
+        with reminder._locked_state() as state:
+            state[f"{name}:daily_timeout"] = {"type": "daily_timeout", "time": now.isoformat()}
+
+        now = datetime(2026, 11, 13, 9, 45)
+        with patch.object(reminder, "_in_time_window", return_value=False):
+            note, = engine._check_daily(entry, plan)
+            email = EmailChannel()._format_notification(note, "test")
+            for message in (note["message"], email):
+                assert "补检" in message
+                assert "2026-11-07、2026-11-08" in message
+                assert "2026-11-12" not in message
+            assert engine._check_daily(entry, plan) == []
+
+        now = datetime(2026, 11, 13, 21, 30, 0, 204985)
+        daily_tracker.record_review_reminded(name)
+        now += timedelta(minutes=10)
+        with patch.object(engine, "_dispatch") as dispatch:
+            engine._fire_review_timeout(name, "2026-11-13")
+            note, = dispatch.call_args.args[0]
+            assert "2026-11-13" in note["message"] and "补检" not in note["message"]
+
+
 # ── main ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -736,6 +832,8 @@ if __name__ == "__main__":
         ("launchd_failure_reporting", test_launchd_reload_reports_bootstrap_failure),
         ("macos_launchd_daemon", test_macos_daemon_deployment_uses_launchd),
         ("pending_queue_wakeup", test_pending_queue_gets_webhook_wakeup_retry),
+        ("recorded_review_deadline", test_review_timeout_uses_recorded_deadline_after_schedule_reload),
+        ("startup_timeout_catchup", test_startup_timeout_catchup_batches_dates_and_preserves_today_timeout),
     ]
 
     failed = 0

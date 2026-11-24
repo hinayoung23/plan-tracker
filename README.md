@@ -1,5 +1,12 @@
 # Plan Tracker MCP
 
+### 2.14.2 · Evening review deadlines
+
+The daemon schedules each timeout from the recorded evening reminder timestamp
+and restores pending timeouts after startup or a schedule reload. Timeout
+notifications include the review date. Startup catch-up lists all newly marked
+dates for a plan in one notification.
+
 ### 2.14.1: isolated OpenClaw runtime
 
 OpenClaw 2026.9.7 rejects plugin packages containing Python virtual-environment
@@ -62,7 +69,7 @@ Whether it's a learning roadmap, project plan, fitness goal, or reading list, Pl
 ```bash
 openclaw plugins install clawhub:plan-tracker
 python3 -m venv "$HOME/.local/share/plan-tracker/venv"
-"$HOME/.local/share/plan-tracker/venv/bin/python" -m pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.1/plan_tracker-2.14.1-py3-none-any.whl
+"$HOME/.local/share/plan-tracker/venv/bin/python" -m pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2/plan_tracker-2.14.2-py3-none-any.whl
 "$HOME/.local/share/plan-tracker/venv/bin/python" -m plan_tracker.cli setup
 ```
 
@@ -75,7 +82,7 @@ notification delivery.
 #### Option 2: pip
 
 ```bash
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.1/plan_tracker-2.14.1-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2/plan_tracker-2.14.2-py3-none-any.whl
 ```
 
 ### Setup
@@ -204,7 +211,7 @@ openclaw plugins install clawhub:plan-tracker
 
 # 将 Python 服务安装到插件目录以外
 python3 -m venv "$HOME/.local/share/plan-tracker/venv"
-"$HOME/.local/share/plan-tracker/venv/bin/python" -m pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.1/plan_tracker-2.14.1-py3-none-any.whl
+"$HOME/.local/share/plan-tracker/venv/bin/python" -m pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2/plan_tracker-2.14.2-py3-none-any.whl
 "$HOME/.local/share/plan-tracker/venv/bin/python" -m plan_tracker.cli setup
 ```
 
@@ -214,7 +221,7 @@ python3 -m venv "$HOME/.local/share/plan-tracker/venv"
 
 ```bash
 # 从 GitHub Releases 安装
-pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.1/plan_tracker-2.14.1-py3-none-any.whl
+pip install https://github.com/hinayoung23/plan-tracker/releases/download/v2.14.2/plan_tracker-2.14.2-py3-none-any.whl
 
 # 或从源码安装
 git clone https://github.com/hinayoung23/plan-tracker.git

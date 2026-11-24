@@ -186,10 +186,7 @@ TPL_DAILY_TIMEOUT = """\
 
 计划：{plan_title}
 
-⏰ 今天的晚间确认已超时，系统已将计划自动标记为「未完成」。
-
-如需补确认，请运行 daily_confirm 工具，
-补确认将归档到明天的计划记录中。
+⏰ {timeout_detail}
 
 ---
 Plan Tracker · {send_time}

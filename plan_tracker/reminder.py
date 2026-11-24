@@ -28,6 +28,7 @@ from plan_tracker.daily_tracker import (
     record_checkin_reminded,
     record_review_reminded,
     check_review_timeout,
+    pending_review_deadlines,
     auto_mark_incomplete,
     get_archived_for_date,
     catch_up_past_timeouts,
@@ -117,7 +118,6 @@ class ReminderEngine:
         self._cleanup_notification_queue()
         self._check_all()
         self._wake_pending_notifications()
-        self._schedule_catchup_timeouts()
         self._schedule_all_events()  # includes queue cleanup at 03:00
         self._thread = threading.Thread(
             target=self._scheduler.run, daemon=True, name="plan-tracker-reminder",
@@ -189,6 +189,7 @@ class ReminderEngine:
         if reminders.get("daily_review_enabled", True):
             t = reminders.get("daily_review_time", "21:30")
             self._schedule_event(t, self._fire_daily_review, plan_name)
+            self._schedule_pending_review_timeouts(plan_name, reminders)
 
         t = reminders.get("daily_checkin_time", "08:30")
         self._schedule_event(t, self._fire_milestone_check, plan_name, offset_minutes=5)
@@ -202,36 +203,18 @@ class ReminderEngine:
         self._signal_wake()
 
 
-    def _schedule_catchup_timeouts(self) -> None:
-        """After startup catch-up, schedule timeout checks for TODAY.
+    def _schedule_pending_review_timeouts(self, plan_name: str, reminders: dict) -> None:
+        """Restore today's pending review and any open windows from previous days."""
+        timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
+        today = _today_str()
+        for review_date, deadline in pending_review_deadlines(plan_name, timeout_minutes).items():
+            if review_date == today or deadline.astimezone().date().isoformat() >= today:
+                self._schedule_review_timeout(plan_name, review_date, deadline)
 
-        Uses absolute scheduling (now + offset) instead of _schedule_event
-        which would schedule the NEXT daily occurrence (potentially tomorrow).
-        """
-        index = load_index()
-        if not index or not index.get("plans"):
-            return
-        now = _local_now()
-        for entry in index["plans"]:
-            plan = load_plan(entry["name"])
-            if not plan or not plan.get("reminders", {}).get("enabled", True):
-                continue
-            reminders = plan.get("reminders", {})
-            if not reminders.get("daily_review_enabled", True):
-                continue
-            rev_time = reminders.get("daily_review_time", "21:30")
-            timeout_m = reminders.get("confirmation_timeout_minutes", 10)
-            if _in_time_window(now, rev_time):
-                # Schedule timeout ABSOLUTELY (now + offset), not via
-                # the daily-slot-based _schedule_event which would
-                # land on tomorrow if now > today's slot.
-                target = now + timedelta(minutes=timeout_m)
-                self._scheduler.enterabs(
-                    target.timestamp(), 1,
-                    self._fire_review_timeout, (entry["name"],),
-                )
-                logger.debug("Scheduled catch-up timeout for %s at %s",
-                            entry["name"], target.isoformat())
+    def _schedule_review_timeout(self, plan_name: str, review_date: str, deadline: datetime) -> None:
+        self._scheduler.enterabs(
+            deadline.timestamp(), 1, self._fire_review_timeout, (plan_name, review_date),
+        )
 
     def _fire_weekly_check(self, plan_name: str) -> None:
         """Fire a weekly summary and self-reschedule for next week."""
@@ -305,6 +288,7 @@ class ReminderEngine:
             if reminders.get("daily_review_enabled", True):
                 t = reminders.get("daily_review_time", "21:30")
                 self._schedule_event(t, self._fire_daily_review, entry["name"])
+                self._schedule_pending_review_timeouts(entry["name"], reminders)
 
             t = reminders.get("daily_checkin_time", "08:30")
             self._schedule_event(t, self._fire_milestone_check, entry["name"],
@@ -378,6 +362,8 @@ class ReminderEngine:
         if not plan:
             return
         reminders = plan.get("reminders", {})
+        timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
+        review_date = _today_str()
 
         cooldown_key = f"{plan_name}:daily_review"
         should_send = False
@@ -389,13 +375,12 @@ class ReminderEngine:
         if should_send:
             today_state = get_today_state(plan_name)
             if not today_state.get("review_reminded"):
-                record_review_reminded(plan_name)
+                review_date = record_review_reminded(plan_name)
                 milestone = _get_active_milestone(plan)
-                timeout = reminders.get("confirmation_timeout_minutes", 10)
                 entry = _plan_index_entry(plan_name)
                 if entry:
                     self._dispatch([
-                        _build_daily_review(entry, plan, milestone, timeout),
+                        _build_daily_review(entry, plan, milestone, timeout_minutes),
                     ])
 
         # Reschedule for tomorrow
@@ -403,31 +388,30 @@ class ReminderEngine:
             t = reminders.get("daily_review_time", "21:30")
             self._schedule_event(t, self._fire_daily_review, plan_name)
 
-        # Also schedule the timeout check
-        timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
-        t = reminders.get("daily_review_time", "21:30")
-        self._schedule_event(t, self._fire_review_timeout, plan_name,
-                            offset_minutes=timeout_minutes)
+        deadline = pending_review_deadlines(plan_name, timeout_minutes).get(review_date)
+        if deadline is not None:
+            self._schedule_review_timeout(plan_name, review_date, deadline)
 
-    def _fire_review_timeout(self, plan_name: str) -> None:
+    def _fire_review_timeout(self, plan_name: str, review_date: str) -> None:
         """Check for review timeout and auto-mark if needed."""
         plan = load_plan(plan_name)
         if not plan:
             return
         reminders = plan.get("reminders", {})
+        if not reminders.get("enabled", True) or not reminders.get("daily_review_enabled", True):
+            return
         timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
 
-        if check_review_timeout(plan_name, timeout_minutes):
-            key = f"{plan_name}:daily_timeout"
-            with _locked_state() as state:
-                if not _should_notify(state, key, "daily_timeout"):
-                    return
-                state[key] = {"type": "daily_timeout", "time": _cooldown_now_iso()}
-            result = auto_mark_incomplete(plan_name)
-            if result:
-                entry = _plan_index_entry(plan_name)
-                if entry:
-                    self._dispatch([_build_daily_timeout(entry, plan)])
+        deadline = pending_review_deadlines(plan_name, timeout_minutes).get(review_date)
+        if deadline is None:
+            return
+        if datetime.now(timezone.utc) < deadline:
+            self._schedule_review_timeout(plan_name, review_date, deadline)
+            return
+
+        entry = _plan_index_entry(plan_name)
+        if entry and auto_mark_incomplete(plan_name, review_date):
+            self._dispatch([_build_daily_timeout(entry, [review_date])])
 
     def _fire_milestone_check(self, plan_name: str) -> None:
         """Check all milestones for one plan (overdue/upcoming/stale/weekly), then reschedule."""
@@ -639,12 +623,10 @@ class ReminderEngine:
         # Catch up on past unconfirmed reviews (daemon was down)
         timeout_minutes = reminders.get("confirmation_timeout_minutes", 10)
         past_results = catch_up_past_timeouts(entry["name"], timeout_minutes)
-        for result in past_results:
-            key = f"{entry['name']}:daily_timeout"
-            with _locked_state() as state:
-                if _should_notify(state, key, "daily_timeout"):
-                    state[key] = {"type": "daily_timeout", "time": _cooldown_now_iso()}
-                    notifications.append(_build_daily_timeout(entry, plan))
+        if past_results:
+            notifications.append(_build_daily_timeout(
+                entry, [result["date"] for result in past_results], catch_up=True,
+            ))
 
         # Atomic checkin cooldown: only one path wins the race
         should_checkin = False
@@ -686,15 +668,12 @@ class ReminderEngine:
                     _build_daily_review(entry, plan, milestone, timeout)
                 )
 
-        # Timeout notification (also atomic)
-        if check_review_timeout(entry["name"], timeout_minutes):
-            key = f"{entry['name']}:daily_timeout"
-            with _locked_state() as state:
-                if _should_notify(state, key, "daily_timeout"):
-                    state[key] = {"type": "daily_timeout", "time": _cooldown_now_iso()}
-            result = auto_mark_incomplete(entry["name"])
+        # The daily state claims each review date once across all timeout paths.
+        review_date = _today_str()
+        if check_review_timeout(entry["name"], timeout_minutes, target_date=review_date):
+            result = auto_mark_incomplete(entry["name"], review_date)
             if result:
-                notifications.append(_build_daily_timeout(entry, plan))
+                notifications.append(_build_daily_timeout(entry, [result["date"]]))
 
         return notifications
 
@@ -800,19 +779,19 @@ def _build_daily_review(entry: dict, plan: dict, milestone: dict | None,
     }
 
 
-def _build_daily_timeout(entry: dict, plan: dict) -> dict:
+def _build_daily_timeout(entry: dict, dates: list[str], *, catch_up: bool = False) -> dict:
     plan_title = entry.get("title", entry["name"])
-
-    msg = (
-        f"[Plan Tracker] ⏰ {plan_title} — 晚间确认超时，已自动标记为未完成。\n"
-        f"可使用 daily_confirm 补确认。"
-    )
+    label = "晚间确认超时（补检）" if catch_up else "晚间确认超时"
+    detail = f"{label}，已自动标记为未完成。\n日期：{'、'.join(dates)}"
+    if not catch_up:
+        detail += "\n可使用 daily_confirm 补确认。"
 
     return {
         "plan_name": entry["name"],
         "milestone_id": "",
         "milestone_title": "",
-        "message": msg,
+        "message": f"[Plan Tracker] ⏰ {plan_title} — {detail}",
+        "timeout_detail": detail,
         "type": "daily_timeout",
         "plan_title": plan_title,
     }
